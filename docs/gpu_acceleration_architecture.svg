@@ -1,0 +1,144 @@
+<svg width="100%" viewBox="0 0 760 780" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>GPU acceleration architecture in the SLAM system</title>
+  <desc>Flowchart showing GPU backend detection, health checks, acceleration mode routing, memory pools, component GPU flags, and CPU fallback boundaries.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+    <style>
+      .bg { fill: #101418; }
+      .group { fill: none; stroke: rgba(222,220,209,0.28); stroke-width: 1; stroke-dasharray: 6 3; }
+      .panel { fill: none; stroke: rgba(222,220,209,0.18); stroke-width: 0.5; }
+      .label { font: 11px "Segoe UI", Arial, sans-serif; fill: #9c9a92; text-anchor: middle; }
+      .title { font: 14px "Segoe UI", Arial, sans-serif; font-weight: 600; text-anchor: middle; }
+      .sub { font: 12px "Segoe UI", Arial, sans-serif; text-anchor: middle; }
+      .small { font: 11px "Segoe UI", Arial, sans-serif; fill: #c2c0b6; }
+      .tiny { font: 10px "Segoe UI", Arial, sans-serif; fill: #9c9a92; }
+      .arrow { stroke: #9c9a92; stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #9c9a92; stroke-width: 1; stroke-dasharray: 4 3; fill: none; marker-end: url(#arrow); }
+      .guard { fill: #084f41; stroke: #5dcaa5; }
+      .guardText { fill: #9fe1cb; }
+      .probe { fill: #3c3489; stroke: #afa9ec; }
+      .probeText { fill: #cecbf6; }
+      .policy { fill: #633806; stroke: #ef9f27; }
+      .policyText { fill: #fac775; }
+      .route { fill: #0c447c; stroke: #85b7eb; }
+      .routeText { fill: #b5d4f4; }
+      .fallback { fill: #712b13; stroke: #f0997b; }
+      .fallbackText { fill: #f5c4b3; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="760" height="780"/>
+
+  <rect class="group" x="20" y="20" width="330" height="520" rx="16"/>
+  <text class="label" x="185" y="44">import-time backend foundation</text>
+
+  <rect class="group" x="410" y="20" width="330" height="520" rx="16"/>
+  <text class="label" x="575" y="44">runtime SLAM component routing</text>
+
+  <g>
+    <rect class="guard" x="45" y="62" width="280" height="58" rx="8" stroke-width="0.5"/>
+    <text class="title guardText" x="185" y="85">src.utils.cupy_utils import</text>
+    <text class="sub" x="185" y="105" fill="#5dcaa5">disable OpenCV OpenCL before CUDA init</text>
+  </g>
+
+  <line class="arrow" x1="185" y1="120" x2="185" y2="148"/>
+
+  <g>
+    <rect class="probe" x="45" y="148" width="280" height="82" rx="8" stroke-width="0.5"/>
+    <text class="title probeText" x="185" y="171">Windows CUDA DLL discovery</text>
+    <text class="sub" x="185" y="191" fill="#afa9ec">prefer CUDA 12 paths for cupy-cuda12x</text>
+    <text class="sub" x="185" y="210" fill="#afa9ec">filter incompatible CUDA 13 toolkit paths</text>
+  </g>
+
+  <line class="arrow" x1="185" y1="230" x2="185" y2="258"/>
+
+  <g>
+    <rect class="probe" x="45" y="258" width="280" height="86" rx="8" stroke-width="0.5"/>
+    <text class="title probeText" x="185" y="281">CuPy capability check</text>
+    <text class="sub" x="185" y="301" fill="#afa9ec">import cupy, count CUDA devices</text>
+    <text class="sub" x="185" y="320" fill="#afa9ec">run child-process cuBLAS matmul healthcheck</text>
+  </g>
+
+  <line class="arrow" x1="185" y1="344" x2="185" y2="372"/>
+
+  <g>
+    <rect class="probe" x="45" y="372" width="280" height="86" rx="8" stroke-width="0.5"/>
+    <text class="title probeText" x="185" y="395">PyTorch CUDA check</text>
+    <text class="sub" x="185" y="415" fill="#afa9ec">requires torch.cuda.is_available()</text>
+    <text class="sub" x="185" y="434" fill="#afa9ec">child-process linear op healthcheck</text>
+  </g>
+
+  <line class="arrow" x1="185" y1="458" x2="185" y2="486"/>
+
+  <g>
+    <rect class="policy" x="45" y="486" width="280" height="42" rx="8" stroke-width="0.5"/>
+    <text class="title policyText" x="185" y="511">export cp, USE_CUPY, USE_TORCH</text>
+  </g>
+
+  <line class="arrow" x1="325" y1="507" x2="435" y2="90"/>
+
+  <g>
+    <rect class="guard" x="435" y="62" width="280" height="58" rx="8" stroke-width="0.5"/>
+    <text class="title guardText" x="575" y="85">RobustStereoSLAM.__init__()</text>
+    <text class="sub" x="575" y="105" fill="#5dcaa5">creates GPUAccelerationManager(config)</text>
+  </g>
+
+  <line class="arrow" x1="575" y1="120" x2="575" y2="148"/>
+
+  <g>
+    <rect class="policy" x="435" y="148" width="280" height="82" rx="8" stroke-width="0.5"/>
+    <text class="title policyText" x="575" y="171">_setup_gpu_memory()</text>
+    <text class="sub" x="575" y="191" fill="#ef9f27">CuPy memory pool limit from config</text>
+    <text class="sub" x="575" y="210" fill="#ef9f27">warmup and optional preallocation</text>
+  </g>
+
+  <line class="arrow" x1="575" y1="230" x2="575" y2="258"/>
+
+  <g>
+    <rect class="policy" x="435" y="258" width="280" height="86" rx="8" stroke-width="0.5"/>
+    <text class="title policyText" x="575" y="281">get_acceleration_config()</text>
+    <text class="sub" x="575" y="301" fill="#ef9f27">mode: full_gpu, mixed_gpu_cpu, cpu_only</text>
+    <text class="sub" x="575" y="320" fill="#ef9f27">emits per-component GPU feature flags</text>
+  </g>
+
+  <line class="arrow" x1="575" y1="344" x2="575" y2="372"/>
+
+  <g>
+    <rect class="route" x="435" y="372" width="280" height="106" rx="8" stroke-width="0.5"/>
+    <text class="title routeText" x="575" y="394">SLAM subsystems consume flags</text>
+    <text class="sub" x="575" y="414" fill="#85b7eb">bubbles and TSDF -> CuPy arrays</text>
+    <text class="sub" x="575" y="433" fill="#85b7eb">tracking, PnP, BA -> Torch/Kornia when healthy</text>
+    <text class="sub" x="575" y="452" fill="#85b7eb">visualization receives CPU payload only</text>
+  </g>
+
+  <line class="arrow" x1="575" y1="478" x2="575" y2="506"/>
+
+  <g>
+    <rect class="fallback" x="435" y="506" width="280" height="42" rx="8" stroke-width="0.5"/>
+    <text class="title fallbackText" x="575" y="531">fallback path: NumPy / CPU-safe arrays</text>
+  </g>
+
+  <text class="tiny" x="380" y="572" text-anchor="middle">CPU/GPU transfer boundary</text>
+  <line class="dash" x1="80" y1="582" x2="680" y2="582"/>
+
+  <rect class="panel" x="20" y="600" width="720" height="156" rx="12"/>
+  <text x="40" y="626" class="small" font-weight="600">Key design decisions</text>
+
+  <rect class="policy" x="40" y="640" width="10" height="10" rx="2"/>
+  <text class="small" x="58" y="650">Backend checks happen before SLAM construction, so unsafe CUDA/cuBLAS states are disabled early.</text>
+
+  <rect class="probe" x="40" y="663" width="10" height="10" rx="2"/>
+  <text class="small" x="58" y="673">CuPy and Torch CUDA are verified in child processes to avoid poisoning the main SLAM runtime.</text>
+
+  <rect class="route" x="40" y="686" width="10" height="10" rx="2"/>
+  <text class="small" x="58" y="696">Components ask for array backends through cupy_manager, enabling CuPy, TorchXP, or NumPy fallback.</text>
+
+  <rect class="fallback" x="40" y="709" width="10" height="10" rx="2"/>
+  <text class="small" x="58" y="719">GPU-to-CPU conversion is explicit through to_cpu/to_numpy_safe and should stay at IO or visualization boundaries.</text>
+
+  <rect class="guard" x="40" y="732" width="10" height="10" rx="2"/>
+  <text class="small" x="58" y="742">Memory cleanup goes through optimize_gpu_memory(), Torch cache clearing, and CuPy pool free_all_blocks().</text>
+</svg>

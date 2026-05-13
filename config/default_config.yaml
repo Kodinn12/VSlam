@@ -1,0 +1,151 @@
+# SLAM Configuration for OAK-D Stereo + IMU
+
+# GPU/CPU Acceleration Mode
+# Options: 'full_gpu', 'mixed_gpu_cpu', 'cpu_only'
+acceleration_mode: 'full_gpu'
+
+camera_fps: 30
+depth_resolution: [640, 400]
+enable_imu: true
+
+# SuperPoint / LightGlue
+max_num_keypoints: 1024
+match_threshold: 0.10
+min_matches_tracking: 12
+tracking_inlier_threshold: 3.0
+
+# LM Refiner
+lm_max_iterations: 30
+lm_min_inliers: 6
+lm_initial_lambda: 0.001
+lm_convergence_delta: 5e-8
+lm_use_gpu: true
+
+# Robust Cost
+huber_threshold_reproj: 1.5
+huber_threshold_depth: 0.10
+
+# TSDF & Mapping
+tsdf_voxel_length: 0.006
+tsdf_sdf_trunc: 0.028
+tsdf_max_depth: 3.0
+max_keyframes_in_buffer: 60
+tsdf_integration_frequency: 2
+raycast_update_frequency: 5
+use_threaded_integration: true
+use_tsdf: true
+use_cupy_voxel_grid: true
+voxel_grid_size: [256, 256, 256]
+
+# Keyframe Selection
+keyframe_translation_threshold: 0.04
+keyframe_rotation_threshold: 0.07
+
+# Loop Closure
+enable_loop_closure: true
+loop_min_matches: 40
+loop_temporal_window: 10
+loop_ransac_thresh: 1.5
+loop_candidate_limit: 20
+loop_check_frequency: 8
+
+# Tracking Safety
+max_pose_jump: 0.50
+max_rotation_jump: 0.60
+
+# Particle Filter
+pf_num_particles: 100
+pf_sigma_t_base: 0.010
+pf_sigma_r_base: 0.012
+pf_sigma_t_min: 0.002
+pf_sigma_r_min: 0.003
+pf_obs_sigma: 3.0
+pf_resample_threshold: 0.5
+pf_karcher_iters: 8
+pf_confidence_scale: 40.0
+pf_adaptive_obs_scale: 0.03
+
+# Gaussian Bubbles
+bubble_stride: 2
+bubble_sigma_disp: 0.5
+bubble_sigma_pix: 0.3
+bubble_mahal_thresh: 5.0
+bubble_min_weight: 2.0
+bubble_max_bubbles: 500000
+bubble_fusion_radius_scale: 2.0
+bubble_rebuild_every: 4
+bubble_cuda: true
+bubble_visualization_threshold: 0.02
+bubble_prune_frequency: 20
+bubble_min_depth: 0.1
+bubble_max_depth: 8.0
+bubble_sigma_par_max: 0.15
+bubble_trace_max: 0.75
+bubble_depth_edge_thresh: 0.20    # tighter edge filter → fewer holes in surfaces
+max_new_bubbles_per_frame: 80000  # stride=2 on 640x400 gives ~64k candidates
+fusion_distance_threshold: 0.02   # smaller voxel cell means less aggressive merging
+max_sigma_trace: 2.0              # Level-0 pruning: remove bubbles with covariance trace > this (degenerate)
+
+# Ghost Particle Relocalizer
+relocalizer_trigger_failures: 15
+relocalizer_max_attempts: 12
+relocalizer_max_iters: 60
+relocalizer_spread_t: 0.5
+relocalizer_spread_r: 0.8
+relocalizer_converge_thresh: 0.35
+relocalizer_min_score: 0.35
+relocalizer_min_overlap_pixels: 80
+
+# IMU
+imu_pf_weight: 0.75
+imu_jump_tolerance_factor: 2.0
+imu_fast_motion_gyro_thresh: 0.30
+imu_fast_kf_rot_scale: 0.50
+imu_holdover_max_frames: 20
+imu_holdover_max_dt: 0.35
+imu_clahe_omega_thresh: 0.40
+imu_clahe_clip_limit: 2.0
+imu_clahe_tile_grid: [8, 8]
+imu_bubble_omega_thresh: 0.25
+imu_bubble_omega_ref: 1.0
+imu_loop_omega_thresh: 0.20
+
+# Output / Visualisation
+save_depth_maps: true
+output_folder: "scan_output"
+enable_3d_visualization: true
+enable_pyvista_visualization: true
+visualization_update_frequency: 8
+max_visualization_points: 250000
+visualization_point_size: 2.5
+show_camera_trajectory: true
+show_bubbles: true
+show_voxels: true
+force_bubble_update: false
+
+# Global Pose Graph Optimization
+enable_global_optimization: true
+pgo_max_iterations: 25
+pgo_convergence_delta: 1e-8
+pgo_info_trans: 500.0
+pgo_info_rot: 500.0
+pgo_info_odom_scale: 0.5
+pgo_fix_first: true
+pgo_huber_thresh: 1.0
+pgo_max_step_norm: 3.0
+
+# Windowed Bundle Adjustment
+enable_bundle_adjustment: true
+ba_window_size: 6
+ba_frequency: 8
+ba_max_iterations: 8
+ba_lambda_init: 0.001
+ba_convergence_delta: 1e-6
+ba_huber_thresh: 2.0
+ba_min_track_length: 2
+ba_max_reproj_error: 5.0
+ba_reintegrate_on_correction: true
+ba_correction_trigger: 0.15
+ba_depth_weight: 0.5
+ba_depth_huber_thresh: 0.12
+ba_max_step_norm: 5.0

@@ -1,0 +1,215 @@
+# Full GPU Acceleration Configuration for SLAM
+
+# GPU/CPU Acceleration Mode
+acceleration_mode: 'full_gpu'
+
+# Depth Source Selection
+depth_source: 'oakd_hardware'  # Options: 'oakd_hardware', 'custom_sgm', 'ultimate_stereo'
+
+camera_fps: 30
+depth_resolution: [640, 400]
+enable_imu: true
+
+# SuperPoint / LightGlue - GPU Optimized
+max_num_keypoints: 2048
+match_threshold: 0.08
+min_matches_tracking: 15
+tracking_inlier_threshold: 2.5
+
+# LM Refiner - GPU Optimized
+lm_max_iterations: 40
+lm_min_inliers: 8
+lm_initial_lambda: 0.0005
+lm_convergence_delta: 1e-9
+lm_use_gpu: true
+
+# Robust Cost
+huber_threshold_reproj: 1.2
+huber_threshold_depth: 0.08
+
+# TSDF & Mapping - GPU Optimized
+tsdf_voxel_length: 0.008
+tsdf_sdf_trunc: 0.020
+tsdf_max_depth: 4.0
+max_keyframes_in_buffer: 40
+tsdf_integration_frequency: 5
+raycast_update_frequency: 10
+use_threaded_integration: true
+use_tsdf: true
+use_cupy_voxel_grid: true
+voxel_grid_size: [256, 256, 256]
+
+# Keyframe Selection - GPU Optimized with Adaptive Insertion
+keyframe_translation_threshold: 0.03
+keyframe_rotation_threshold: 0.05
+adaptive_keyframe_enabled: true
+keyframe_motion_weight: 0.4
+keyframe_quality_weight: 0.3
+keyframe_novelty_weight: 0.3
+keyframe_dynamic_threshold: true
+fallback_periodic_kf: 30
+keyframe_min_inlier_ratio: 0.3
+keyframe_max_reproj_error: 2.0
+keyframe_novelty_threshold: 0.2
+
+# Loop Closure - GPU Optimized
+enable_loop_closure: true
+loop_min_matches: 50
+loop_temporal_window: 15
+loop_ransac_thresh: 1.2
+loop_candidate_limit: 30
+loop_check_frequency: 6
+
+# Tracking Safety
+max_pose_jump: 0.40
+max_rotation_jump: 0.50
+
+# Particle Filter - GPU Optimized
+pf_num_particles: 150
+pf_sigma_t_base: 0.008
+pf_sigma_r_base: 0.010
+pf_sigma_t_min: 0.001
+pf_sigma_r_min: 0.002
+pf_obs_sigma: 2.5
+pf_resample_threshold: 0.4
+pf_karcher_iters: 12
+pf_confidence_scale: 50.0
+pf_adaptive_obs_scale: 0.02
+
+# Gaussian Bubbles - GPU Optimized with Hierarchical Pruning
+bubble_stride: 1
+bubble_sigma_disp: 0.4
+bubble_sigma_pix: 0.2
+bubble_mahal_thresh: 4.0
+bubble_min_weight: 3.0
+bubble_max_bubbles: 500000
+bubble_fusion_radius_scale: 1.5
+bubble_rebuild_every: 2
+bubble_cuda: true
+bubble_visualization_threshold: 0.02
+bubble_prune_frequency: 10
+bubble_min_depth: 0.08
+bubble_max_depth: 8.0
+bubble_sigma_par_max: 0.12
+bubble_trace_max: 0.60
+bubble_depth_edge_thresh: 0.20
+bubble_force_gpu_processing: true
+
+# Hierarchical Bubble Pruning
+hierarchical_pruning_enabled: true
+local_pruning_threshold: 0.1
+regional_merge_distance: 0.05
+global_importance_threshold: 0.5
+persistent_global_map_size: 100000
+hard_bubble_limit: 500000
+pruning_batch_size: 10000
+
+# Hard Limits for Stability (reduced for memory)
+max_active_bubbles: 100000
+max_global_bubbles: 500000
+max_new_bubbles_per_frame: 80000
+
+# Multi-View Fusion Parameters
+fusion_distance_threshold: 0.02
+max_keyframes: 50
+min_keyframe_features: 50
+min_depth_coverage: 0.3
+fusion_overlap_threshold: 0.3
+
+# Temporal Consistency Parameters
+age_decay_rate: 0.01
+max_keyframe_age: 1000
+temporal_update_frequency: 10
+
+# Loop Closure Parameters
+loop_closure_min_distance: 2.0
+loop_closure_max_distance: 10.0
+enable_loop_closure: true
+loop_closure_candidate_age_threshold: 20
+
+# Ghost Particle Relocalizer - GPU Optimized
+relocalizer_trigger_failures: 12
+relocalizer_max_attempts: 15
+relocalizer_max_iters: 80
+relocalizer_spread_t: 0.4
+relocalizer_spread_r: 0.6
+relocalizer_converge_thresh: 0.30
+relocalizer_min_score: 0.40
+relocalizer_min_overlap_pixels: 100
+
+# IMU
+imu_pf_weight: 0.80
+imu_jump_tolerance_factor: 1.8
+imu_fast_motion_gyro_thresh: 0.25
+imu_fast_kf_rot_scale: 0.40
+imu_holdover_max_frames: 25
+imu_holdover_max_dt: 0.40
+imu_clahe_omega_thresh: 0.35
+imu_clahe_clip_limit: 2.5
+imu_clahe_tile_grid: [8, 8]
+imu_bubble_omega_thresh: 0.20
+imu_bubble_omega_ref: 1.2
+imu_loop_omega_thresh: 0.15
+
+# Output / Visualisation - Enhanced 3D Visualization
+save_depth_maps: false  # Disabled - no file saving
+output_folder: "scan_output_gpu"  # Disabled - no folder creation
+enable_3d_visualization: true
+enable_pyvista_visualization: true
+visualization_update_frequency: 8
+max_visualization_points: 1000000  # Increased for enhanced reconstruction
+visualization_point_size: 2.6
+show_camera_trajectory: true
+show_bubbles: true
+show_voxels: true
+force_bubble_update: false
+# Enhanced visualization parameters
+bubble_confidence_threshold: 0.3  # Filter low-confidence bubbles
+bubble_uncertainty_threshold: 0.12  # Remove high-uncertainty bubbles
+enable_surface_reconstruction: true  # Mesh from bubble points
+enhanced_lighting: true  # Multi-light setup for depth perception
+adaptive_point_size: true  # Dynamic sizing based on distance
+measurement_tools_enabled: true  # Interactive distance measurement
+
+# GPU Performance Optimization
+gpu_memory_pool_limit: 6442450944
+gpu_pinned_memory_limit: 1073741824
+gpu_prefer_large_kernels: true
+gpu_enable_streaming: true
+gpu_force_memory_usage: true
+
+# GPU Covariance Stability
+covariance_regularization: 1e-6
+covariance_nan_guard: true
+batch_size_validation: true
+gpu_batch_size: 65536
+gpu_max_concurrent_kernels: 8
+gpu_force_memory_usage: true
+gpu_continuous_compute: true
+
+# Global Pose Graph Optimization - GPU Optimized
+enable_global_optimization: true
+pgo_max_iterations: 25
+pgo_convergence_delta: 1e-9
+pgo_info_trans: 800.0
+pgo_info_rot: 800.0
+pgo_info_odom_scale: 0.4
+pgo_fix_first: true
+pgo_huber_thresh: 0.8
+pgo_max_step_norm: 2.5
+
+# Windowed Bundle Adjustment - GPU Optimized
+enable_bundle_adjustment: true
+ba_window_size: 6
+ba_frequency: 8
+ba_max_iterations: 8
+ba_lambda_init: 0.0005
+ba_convergence_delta: 1e-7
+ba_huber_thresh: 1.5
+ba_min_track_length: 3
+ba_max_reproj_error: 4.0
+ba_reintegrate_on_correction: true
+ba_correction_trigger: 0.12
+ba_depth_weight: 0.6
+ba_depth_huber_thresh: 0.10
+ba_max_step_norm: 4.0
