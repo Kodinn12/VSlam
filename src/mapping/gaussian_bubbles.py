@@ -440,6 +440,7 @@ class ChunkedBubbleMap:
         self.enable_offloading = config.get('enable_chunk_offloading', False)
         self.max_resident_chunks = config.get('max_resident_chunks', 100)
         self.offload_dir = config.get('chunk_offload_dir', 'map_chunks')
+        self.offload_session = f"{os.getpid()}_{int(time.time() * 1000)}"
         if self.enable_offloading and not os.path.exists(self.offload_dir):
             os.makedirs(self.offload_dir)
             
@@ -454,6 +455,24 @@ class ChunkedBubbleMap:
             
         self._start_viz_worker()
         logger.info(f"ChunkedBubbleMap initialized (chunk_size={self.chunk_size}m, local_buffer={self.local_buffer_size})")
+
+    def _chunk_path(self, key):
+        """Return the run-scoped offload path for a chunk."""
+        return os.path.join(self.offload_dir, f"chunk_{self.offload_session}_{key}.npz")
+
+    def _clear_offloaded_chunks(self):
+        """Remove only this run's offloaded chunk cache."""
+        if not self.enable_offloading or not os.path.isdir(self.offload_dir):
+            return
+
+        prefix = f"chunk_{self.offload_session}_"
+        for name in os.listdir(self.offload_dir):
+            if not (name.startswith(prefix) and name.endswith(".npz")):
+                continue
+            try:
+                os.remove(os.path.join(self.offload_dir, name))
+            except OSError as e:
+                logger.warning(f" [OFFLOAD] Failed to remove stale runtime chunk {name}: {e}")
 
     def _start_viz_worker(self):
         self._viz_running = True
@@ -483,7 +502,7 @@ class ChunkedBubbleMap:
             return
             
         chunk = self.chunks[key]
-        path = os.path.join(self.offload_dir, f"chunk_{key}.npz")
+        path = self._chunk_path(key)
         
         # Build CPU-side arrays for saving
         n = len(chunk)
@@ -511,14 +530,19 @@ class ChunkedBubbleMap:
         """Reload chunk from disk if it exists."""
         if not self.enable_offloading:
             return None
-        path = os.path.join(self.offload_dir, f"chunk_{key}.npz")
+        path = self._chunk_path(key)
         if not os.path.exists(path):
             return None
             
         try:
             data = np.load(path)
             origin = data['origin']
-            chunk = MapChunk(origin, cell_size=self.cell_size, use_gpu=self.use_gpu)
+            chunk = MapChunk(
+                origin,
+                cell_size=self.cell_size,
+                use_gpu=self.use_gpu,
+                max_bubbles=int(self.cfg.get('max_bubbles_per_chunk', 10000)),
+            )
             
             xp = cp if self.use_gpu else np
             mu_cpu = data['mu_local']
@@ -699,6 +723,7 @@ class ChunkedBubbleMap:
             else:
                 self.local_count = 0
             self._invalidate_cache()
+        self._clear_offloaded_chunks()
             
     def load_bubbles(self, mu, weight, color, Sigma):
         """Load bubbles from external data into the chunked structure."""
@@ -979,6 +1004,7 @@ class ChunkedBubbleMap:
             else:
                 self.local_count = 0
             self._invalidate_cache()
+        self._clear_offloaded_chunks()
         
         added_keyframes = 0
         for kf in keyframes:
@@ -1187,10 +1213,9 @@ class ChunkedBubbleMap:
         h, w = d_gpu.shape
         
         # ── V53: REDUCED FILTERING IN STABILIZATION MODE ──
-        # Relax edge and weight filtering to ensure visibility during bootstrapping
         edge_thresh = self.cfg.get("bubble_depth_edge_thresh", 0.1)
         if self.stabilization_mode:
-            edge_thresh = 0.25 # More relaxed
+            edge_thresh = self.cfg.get("bubble_stabilization_depth_edge_thresh", edge_thresh)
             
         if edge_thresh > 0:
             # Simple Sobel-like edge detection on depth
@@ -1218,8 +1243,7 @@ class ChunkedBubbleMap:
         # NaN rejection and range gating
         valid = (z_gpu > min_d) & (z_gpu < max_d) & xp.isfinite(z_gpu)
         
-        # Only apply edge filtering if not in aggressive stabilization mode
-        if not self.stabilization_mode:
+        if self.cfg.get("bubble_filter_depth_edges", True):
             valid &= (~is_edge)
         
         if not _truth(xp.any(valid)):

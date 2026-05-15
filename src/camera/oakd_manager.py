@@ -90,6 +90,19 @@ class OakDStereoManager:
         stereo.setSubpixel(True)
         stereo.setDepthAlign(dai.CameraBoardSocket.CAM_B)
         stereo.setOutputSize(self.proc_w, self.proc_h)
+        if self.config.get("oakd_enable_median_filter", False):
+            # DepthAI disables median filtering when subpixel disparity exceeds
+            # the filter limit, so keep this opt-in for non-subpixel experiments.
+            try:
+                stereo.initialConfig.setMedianFilter(dai.MedianFilter.KERNEL_7x7)
+            except Exception as e:
+                logger.debug(f"Stereo median filter unavailable: {e}")
+        try:
+            stereo.initialConfig.setConfidenceThreshold(
+                int(self.config.get("oakd_confidence_threshold", 180))
+            )
+        except Exception as e:
+            logger.debug(f"Stereo confidence threshold unavailable: {e}")
 
         cam_left.out.link(stereo.left)
         cam_right.out.link(stereo.right)

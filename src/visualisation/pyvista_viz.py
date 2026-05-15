@@ -177,7 +177,7 @@ def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D Reconstruction", 
         except queue.Empty:
             try:
                 plotter.update()
-            except Exception:
+            except BaseException:
                 break
             continue
         except Exception as e:
@@ -293,7 +293,7 @@ def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D Reconstruction", 
         try:
             plotter.update()
             plotter.render()
-        except Exception:
+        except BaseException:
             break
 
     try:

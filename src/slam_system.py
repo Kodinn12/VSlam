@@ -1222,8 +1222,8 @@ class RobustStereoSLAM:
 
             # Debug logging
             if self.frame_id % 10 == 0:
-                print(f" [DEBUG] Frame {self.frame_id}: should_update_bubble={should_update_bubble}, "
-                      f"imu_static={_imu_static}, tracked={tracked}")
+                print(f" [DEBUG] Frame {self.frame_id}: pre-track map_gate={should_update_bubble}, "
+                      f"imu_static={_imu_static}")
 
             if self.frame_id > 1:
                 # ── (3) IMU-AIDED PARTICLE FILTER PREDICTION ─────────────
@@ -1838,7 +1838,8 @@ class RobustStereoSLAM:
         
         # Thresholds from config
         t_thr = self.config.get("keyframe_translation_threshold", 0.15)
-        r_thr = np.radians(self.config.get("keyframe_rotation_threshold", 5.0))
+        r_cfg = float(self.config.get("keyframe_rotation_threshold", 0.087))
+        r_thr = np.radians(r_cfg) if r_cfg > np.pi else r_cfg
         n_thr = self.config.get("keyframe_novelty_threshold", 0.10)
         
         # Conditions
@@ -1877,6 +1878,9 @@ class RobustStereoSLAM:
                     continue
                 old_pose = kf.pose.copy()
                 kf.pose  = new_pose           # write corrected pose in-place
+                if kf_id in self.keyframe_manager.keyframes:
+                    self.keyframe_manager.keyframes[kf_id].pose = new_pose.copy()
+                    self.keyframe_manager.keyframe_poses[kf_id] = new_pose.copy()
                 d = np.linalg.norm(new_pose[:3, 3] - self.curr_pose[:3, 3])
                 if d < best_dist:
                     best_dist  = d
@@ -2165,6 +2169,14 @@ class RobustStereoSLAM:
                 corr_map[kf_id] = corrected_poses[i].copy()
             print(f" [BA/async] Done {dt*1e3:.1f} ms  "
                   f"conv={converged}  max_corr={max_c*100:.2f} cm")
+
+            max_accept = float(config.get("ba_max_accepted_correction", 0.75))
+            require_converged = bool(config.get("ba_require_convergence", True))
+            if (require_converged and not converged) or max_c > max_accept:
+                reason = "not converged" if (require_converged and not converged) else f"max_corr>{max_accept:.2f}m"
+                print(f" [BA/async] Correction rejected ({reason}); keeping live poses")
+                return None
+
             trig = config.get("ba_correction_trigger", 0.15)
             do_reintegrate = (max_c > trig and
                               config.get("ba_reintegrate_on_correction", True))

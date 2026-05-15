@@ -9,6 +9,8 @@ depth_source: 'oakd_hardware'  # Options: 'oakd_hardware', 'custom_sgm', 'ultima
 camera_fps: 30
 depth_resolution: [640, 400]
 enable_imu: true
+oakd_confidence_threshold: 180
+oakd_enable_median_filter: false
 
 # SuperPoint / LightGlue - GPU Optimized
 max_num_keypoints: 2048
@@ -84,27 +86,31 @@ pf_adaptive_obs_scale: 0.02
 # Chunked Bubble Map Parameters (V51: Stabilization First)
 chunk_size: 4.0
 active_radius_chunks: 3
-min_weight_prune: 0.005 # Relaxed for visibility
-max_bubbles_per_chunk: 100000
-periodic_prune_interval: 100 # Less frequent pruning
-max_new_bubbles_per_frame: 100000
-bubble_stride: 2 # Faster but still dense
-bubble_visualization_threshold: 0.005
-max_visualisation_points: 150000
-enable_chunk_offloading: true
+min_weight_prune: 0.05
+max_bubbles_per_chunk: 30000
+periodic_prune_interval: 30
+max_new_bubbles_per_frame: 20000
+bubble_stride: 4
+bubble_visualization_threshold: 1.0
+max_visualisation_points: 70000
+enable_chunk_offloading: false
 max_resident_chunks: 20
 
 # Gaussian Bubbles - Stabilization Parameters
-bubble_mahal_thresh: 6.0 # More permissive
-bubble_min_weight: 1.0 # Lower threshold for insertion
-bubble_fusion_radius_scale: 1.0 # Tighter fusion initially
+bubble_mahal_thresh: 5.0
+bubble_min_weight: 1.5
+bubble_fusion_radius_scale: 1.5
+local_fusion_radius: 0.08
+local_voxel_dedup_size: 0.05
 bubble_rebuild_every: 1
 bubble_cuda: true
 bubble_min_depth: 0.1
-bubble_max_depth: 8.0 # Increased range
-bubble_sigma_par_max: 0.25 # More permissive
-bubble_trace_max: 1.2 # More permissive
-bubble_depth_edge_thresh: 0.5 # Relaxed edge filtering
+bubble_max_depth: 4.5
+bubble_sigma_par_max: 0.18
+bubble_trace_max: 0.6
+bubble_depth_edge_thresh: 0.08
+bubble_stabilization_depth_edge_thresh: 0.12
+bubble_filter_depth_edges: true
 bubble_force_gpu_processing: true
 bubble_sigma_disp: 0.4
 bubble_sigma_pix: 0.2
@@ -119,9 +125,9 @@ hard_bubble_limit: 500000
 pruning_batch_size: 10000
 
 # Hard Limits for Stability (reduced for memory)
-max_active_bubbles: 100000
+max_active_bubbles: 70000
 max_global_bubbles: 500000
-max_new_bubbles_per_frame: 80000
+max_new_bubbles_per_frame: 20000
 
 # Multi-View Fusion Parameters
 fusion_distance_threshold: 0.02
@@ -171,7 +177,7 @@ output_folder: "scan_output_gpu"  # Disabled - no folder creation
 enable_3d_visualization: true
 enable_pyvista_visualization: true
 visualization_update_frequency: 10
-max_visualization_points: 150000  # Reduced for 6GB GPU stability
+max_visualization_points: 70000
 visualization_point_size: 2.6
 show_camera_trajectory: true
 show_bubbles: true
@@ -224,6 +230,8 @@ ba_min_track_length: 3
 ba_max_reproj_error: 4.0
 ba_reintegrate_on_correction: true
 ba_correction_trigger: 0.12
+ba_require_convergence: true
+ba_max_accepted_correction: 0.75
 ba_depth_weight: 0.6
 ba_depth_huber_thresh: 0.10
-ba_max_step_norm: 4.0
+ba_max_step_norm: 0.25
