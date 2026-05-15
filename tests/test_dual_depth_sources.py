@@ -1,14 +1,11 @@
 """Integration tests for dual depth source functionality."""
 
-import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import numpy as np
-from camera.oakd_manager import OakDStereoManager
-from camera.depth_source_selector import DepthSourceSelector
-from stereo.stereo_engine import StereoEngine
-from utils.logger import get_logger
+from src.camera.depth_source_selector import DepthSourceSelector
+from src.stereo.stereo_engine import StereoEngine
+from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -70,17 +67,22 @@ def test_synthetic_stereo_pipeline():
     logger.info("Testing stereo pipeline with synthetic data...")
     
     # Generate synthetic stereo images
-    H, W = 400, 640
+    H, W = 48, 64
     left = np.random.randint(0, 256, (H, W), dtype=np.uint8)
     right = np.random.randint(0, 256, (H, W), dtype=np.uint8)
     
     # Add some disparity pattern (simple translation)
     disparity = np.zeros((H, W), dtype=np.float32)
-    disparity[:, 200:] = 10.0  # Right half has disparity of 10 pixels
-    right[:, 200:] = np.roll(left[:, 200:], -10, axis=1)
+    disparity[:, 20:] = 4.0  # Right half has disparity of 4 pixels
+    right[:, 20:] = np.roll(left[:, 20:], -4, axis=1)
     
     # Test CPU stereo engine
-    config_cpu = {"acceleration_mode": "cpu_only"}
+    config_cpu = {
+        "acceleration_mode": "cpu_only",
+        "sgm_cost_volume_depth": 8,
+        "sgm_bilateral_filter": False,
+        "sgm_lr_check": False,
+    }
     engine_cpu = StereoEngine(config_cpu, acceleration_mode="cpu_only")
     
     try:

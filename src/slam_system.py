@@ -21,6 +21,7 @@ from .utils.gpu_acceleration import GPUAccelerationManager
 from .utils.array_utils import to_numpy_safe
 from .utils.depth_utils import bilinear_depth_gpu
 from .core.profiling import Profiler
+from .core.config import coerce_config_types
 # from .dataset.dataset_generator import DatasetGenerator  # DISABLED - User requested no dataset saving
 import numpy as np
 import logging
@@ -94,7 +95,9 @@ class _AsyncOptWorker:
     """Async optimization worker for BA, PGO, and loop closure to prevent frame blocking."""
     
     def __init__(self, config):
+        config = coerce_config_types(config)
         self.config = config
+        self.K = config.get("K", np.eye(3, dtype=np.float64))
         self.ba_queue   = []
         self.pgo_queue  = []
         self.loop_queue = []
@@ -247,7 +250,7 @@ class _AsyncOptWorker:
                 return None
             
             # Create bundle adjuster instance
-            ba = CuPyBundleAdjuster(self.config)
+            ba = CuPyBundleAdjuster(self.K, self.config)
             
             # Create a dummy SuperPointLightGlue for cross-KF matching
             # In a real implementation, this would be passed from the main SLAM system
@@ -396,6 +399,7 @@ class _StubFeatureExtractor:
 
 class RobustStereoSLAM:
     def __init__(self, config):
+        config = coerce_config_types(config)
         self.config = config
         self.proc_size = (640, 400)
         self.frame_id = 0
@@ -551,8 +555,8 @@ class RobustStereoSLAM:
         self.relocalizer = GhostParticleRelocalizer(
             config, self.K_rect_proc, self.voxel_manager, self.bubble_map)
 
-        self.relocalizer_trigger_threshold = config.get("relocalizer_trigger_failures", 3)
-        self.relocalizer_max_attempts      = config.get("relocalizer_max_attempts", 3)
+        self.relocalizer_trigger_threshold = int(config.get("relocalizer_trigger_failures", 15))
+        self.relocalizer_max_attempts      = int(config.get("relocalizer_max_attempts", 12))
         self.relocalizer_attempts          = 0
 
         # ----------------------------------------------------------------

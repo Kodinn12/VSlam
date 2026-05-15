@@ -6,8 +6,8 @@ import cv2
 import time
 import sys
 import numpy as np
-import yaml
 from src.slam_system import RobustStereoSLAM, TrackingState
+from src.core.config import load_config
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,8 +18,7 @@ def main(args_list=None):
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     args = parser.parse_args(args_list)
 
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+    config = load_config(args.config)
 
     if args.debug:
         import logging

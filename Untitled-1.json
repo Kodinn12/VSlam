@@ -1,0 +1,8 @@
+{
+  "name": "insert_edit_into_file",
+  "arguments": {
+    "fileUri": "C:\\Users\\aksha\\Desktop\\Karan\\New folder (3)\\VSlam\\src\\pipeline.py",
+    "lineNumber": 10,
+    "newContent": "# TODO: Define a dataclass for GaussianBubble objects\n# class GaussianBubble:\n#     def __init__(self, ...):\n#         ...\n\n# Replace raw NumPy arrays with GaussianBubble objects in the threaded bubble manager"
+  }
+}

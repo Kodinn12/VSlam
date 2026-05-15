@@ -13,6 +13,8 @@ from .hierarchical_pruner import HierarchicalPruner
 from ..utils.logger import get_logger
 from ..utils.cupy_utils import cp, USE_CUPY, to_numpy_safe, rotate_covariance_batch
 from ..utils.se3_ops import PoseTransform
+from ..core.data_model import GaussianBubbleBatch
+from ..core.array_backend import get_array_module, is_gpu_array
 
 logger = get_logger(__name__)
 
@@ -154,7 +156,7 @@ class MapChunk:
         # Fixed-size buffers for GPU-efficient fusion (Section E)
         # V58: Further reduced max_bubbles per chunk to 10k for extreme stability
         self.max_bubbles = max_bubbles
-        xp = cp if (use_gpu and USE_CUPY) else np
+        xp = get_array_module(use_gpu=(use_gpu and USE_CUPY))
         
         self.mu_local = xp.zeros((max_bubbles, 3), dtype=xp.float32)
         self.Sigma = xp.zeros((max_bubbles, 3, 3), dtype=xp.float32)
@@ -182,13 +184,15 @@ class MapChunk:
 
     def add_bubbles(self, local_pts, weights, colors, Sigmas, stabilization_mode=False):
         """Add and fuse bubbles using GPU bucketed hash or CPU KDTree fallback (Fix 6)."""
+        batch = GaussianBubbleBatch.from_arrays(local_pts, weights, colors, Sigmas, to_numpy=to_numpy_safe)
+        local_pts, weights, colors, Sigmas = batch.mu, batch.weight, batch.color, batch.Sigma
         num_new = len(local_pts)
         if num_new == 0:
             return
             
         # Reconstruction-first stability: deterministic KDTree fusion instead
         # of append-heavy stabilization or fragile GPU hash insertion.
-        xp = cp if (self.use_gpu and USE_CUPY) else np
+        xp = get_array_module(use_gpu=(self.use_gpu and USE_CUPY))
         curr = int(self.current_size[0]) if (self.use_gpu and USE_CUPY) else self.current_size
         mu, sig, w, col = _fuse_gaussians_cpu(
             to_numpy_safe(self.mu_local[:curr]),
@@ -220,7 +224,7 @@ class MapChunk:
         if curr_len == 0:
             return
             
-        xp = cp if self.use_gpu else np
+        xp = get_array_module(use_gpu=self.use_gpu)
         mu = self.mu_local[:curr_len]
         sig = self.Sigma[:curr_len]
         w = self.weight[:curr_len]
@@ -354,8 +358,11 @@ class ThreadedBubbleMapManager:
                     self.map.stabilization_mode = orig_stab
                 
                 if len(pts) > 0:
-                    # 2. Add to map
-                    self.map.add_bubbles(pts, weights, colors, sigmas)
+                    # 2. Validate and add to map through the shared data model.
+                    bubbles = GaussianBubbleBatch.from_arrays(
+                        pts, weights, colors, sigmas, to_numpy=to_numpy_safe
+                    )
+                    self.map.add_bubbles(bubbles)
                     
                     # 3. Trigger visualization update periodically or if forced
                     self.map.push_to_visualizer()
@@ -410,7 +417,7 @@ class ChunkedBubbleMap:
         # ── V40: LOCAL MONOLITHIC BUFFER (Stability) ──
         # V58: Reduced local buffer to 5k to prevent VRAM exhaustion during commits
         self.local_buffer_size = config.get('local_bubble_buffer_size', 5000)
-        xp = cp if self.use_gpu else np
+        xp = get_array_module(use_gpu=self.use_gpu)
         self.local_mu = xp.zeros((self.local_buffer_size, 3), dtype=xp.float32)
         self.local_Sigma = xp.zeros((self.local_buffer_size, 3, 3), dtype=xp.float32)
         self.local_weight = xp.zeros((self.local_buffer_size,), dtype=xp.float32)
@@ -696,7 +703,7 @@ class ChunkedBubbleMap:
     def load_bubbles(self, mu, weight, color, Sigma):
         """Load bubbles from external data into the chunked structure."""
         self.clear()
-        self.add_bubbles(mu, weight, color, Sigma)
+        self.add_bubbles(GaussianBubbleBatch.from_arrays(mu, weight, color, Sigma, to_numpy=to_numpy_safe))
 
     def __len__(self):
         """Total number of bubbles in both local buffer and chunks (Safe V49)."""
@@ -714,7 +721,8 @@ class ChunkedBubbleMap:
 
     def _world_to_chunk_key(self, pts):
         """Convert world points to 64-bit chunk keys (V59 Fix)."""
-        xp = cp if self.use_gpu else np
+        xp = cp if (self.use_gpu and is_gpu_array(pts)) else np
+        pts = xp.asarray(pts)
         # V59: Use int64 explicitly to prevent bit-shift overflow in CuPy/NumPy
         coords = xp.floor(pts / self.chunk_size).astype(xp.int64)
         OFFSET = 1000000
@@ -743,13 +751,28 @@ class ChunkedBubbleMap:
             return True
         return False
 
-    def add_bubbles(self, world_pts, weights, colors, Sigmas):
+    def add_bubbles(self, world_pts, weights=None, colors=None, Sigmas=None):
         """Add bubbles to the local monolithic buffer first for stable fusion."""
+        if isinstance(world_pts, GaussianBubbleBatch):
+            batch = world_pts
+        else:
+            if weights is None or colors is None or Sigmas is None:
+                raise TypeError("add_bubbles expects a GaussianBubbleBatch or mu, weight, color, Sigma arrays")
+            batch = GaussianBubbleBatch.from_arrays(world_pts, weights, colors, Sigmas, to_numpy=to_numpy_safe)
+
+        world_pts = batch.mu
+        weights = batch.weight
+        colors = batch.color
+        Sigmas = batch.Sigma
         if len(world_pts) == 0:
             return
             
         with self._lock:
-            xp = cp if self.use_gpu else np
+            xp = get_array_module(use_gpu=self.use_gpu)
+            world_pts = xp.asarray(world_pts, dtype=xp.float32)
+            weights = xp.asarray(weights, dtype=xp.float32)
+            colors = xp.asarray(colors, dtype=xp.float32)
+            Sigmas = xp.asarray(Sigmas, dtype=xp.float32)
             
             # 1. Strict Filtering
             valid_mask = xp.all(xp.isfinite(world_pts), axis=1)
@@ -942,6 +965,7 @@ class ChunkedBubbleMap:
 
     def reintegrate_map(self, keyframes):
         """Global map correction: clears and re-integrates all keyframes (V49)."""
+        keyframes = list(keyframes)
         logger.info(f" [MAP] Reintegrating {len(keyframes)} keyframes into chunked map...")
         
         with self._lock:
@@ -954,20 +978,21 @@ class ChunkedBubbleMap:
                     self.local_hash_table.fill(-1)
             else:
                 self.local_count = 0
-            
-            # 2. Re-integrate each keyframe
-            for kf in keyframes:
-                # Use the existing backprojection logic from slam_system if possible,
-                # but we can implement a simplified version here.
-                # Since we don't want to duplicate logic, let's assume the caller 
-                # provides the keyframes which already have updated poses.
-                
-                # Re-backproject and add
-                pts_world, weights, colors, Sigmas = self.backproject_keyframe(kf)
-                self.add_bubbles(pts_world, weights, colors, Sigmas)
+            self._invalidate_cache()
+        
+        added_keyframes = 0
+        for kf in keyframes:
+            # Re-backproject outside the map lock. add_bubbles() acquires the
+            # lock internally, so holding it here would deadlock.
+            pts_world, weights, colors, Sigmas = self.backproject_keyframe(kf)
+            if len(pts_world) == 0:
+                continue
+            self.add_bubbles(pts_world, weights, colors, Sigmas)
+            added_keyframes += 1
         
         self._invalidate_cache()
         self.push_to_visualizer(force=True)
+        logger.info(f" [MAP] Reintegration complete ({added_keyframes}/{len(keyframes)} keyframes)")
 
     def backproject_keyframe(self, kf):
         """Helper to backproject a single keyframe into world coordinates."""
@@ -1076,15 +1101,20 @@ class ChunkedBubbleMap:
                     mu_world, colors, weights_chunk = chunk.get_lod_cloud(lod_factor)
                     if mu_world is None: continue
                     mask = weights_chunk > threshold
+                    if not _truth(xp.any(mask)): continue
+                    mu_world = mu_world[mask]
+                    colors = colors[mask]
+                    scale_count = len(mu_world)
                 else:
                     weights_chunk = chunk.weight[:n]
                     mask = weights_chunk > threshold
                     if not _truth(xp.any(mask)): continue
                     mu_world = chunk.mu_local[:n][mask] + xp.asarray(chunk.origin)
                     colors = chunk.color[:n][mask]
+                    scale_count = len(mu_world)
                 
-                all_mu.append(to_numpy_safe(mu_world[mask]))
-                all_colors.append(to_numpy_safe(colors[mask]))
+                all_mu.append(to_numpy_safe(mu_world))
+                all_colors.append(to_numpy_safe(colors))
                 
                 # Re-calculate trace for adaptive scaling on filtered set
                 sig = chunk.Sigma[:n] # Simplified: use full chunk sig for trace if available
@@ -1094,7 +1124,7 @@ class ChunkedBubbleMap:
                     trace = xp.trace(chunk.Sigma[:n][mask], axis1=1, axis2=2)
                     all_scales.append(to_numpy_safe(xp.sqrt(xp.clip(trace, 1e-6, 1.0))))
                 else:
-                    all_scales.append(np.full(len(mu_world[mask]), 0.1, dtype=np.float32))
+                    all_scales.append(np.full(scale_count, 0.1, dtype=np.float32))
         
         if not all_mu:
             return None, None, None

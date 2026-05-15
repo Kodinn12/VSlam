@@ -14,6 +14,27 @@ except ImportError:
 import numpy as np
 
 
+def get_array_module(use_gpu: bool = False, arr=None):
+    """Return the array module to use for a requested mode or existing array."""
+    if arr is not None and CUPY_AVAILABLE and isinstance(arr, cp.ndarray):
+        return cp
+    if use_gpu and CUPY_AVAILABLE:
+        return cp
+    return np
+
+
+def is_gpu_array(arr) -> bool:
+    """Return True when arr is a CuPy array."""
+    return CUPY_AVAILABLE and isinstance(arr, cp.ndarray)
+
+
+def to_numpy(arr):
+    """Convert NumPy/CuPy-like input to a NumPy array."""
+    if is_gpu_array(arr):
+        return cp.asnumpy(arr)
+    return np.asarray(arr)
+
+
 class ArrayBackend:
     """
     Unified array backend that provides CPU/GPU array operations.
@@ -49,10 +70,7 @@ class ArrayBackend:
         module
             NumPy or CuPy module
         """
-        if mode == 'full_gpu' and CUPY_AVAILABLE:
-            return cp
-        else:
-            return np
+        return get_array_module(use_gpu=(mode == 'full_gpu'))
     
     def to_numpy(self, arr):
         """
@@ -68,9 +86,7 @@ class ArrayBackend:
         np.ndarray
             NumPy array on CPU
         """
-        if CUPY_AVAILABLE and isinstance(arr, cp.ndarray):
-            return cp.asnumpy(arr)
-        return np.asarray(arr)
+        return to_numpy(arr)
     
     def to_gpu(self, arr):
         """
@@ -104,7 +120,7 @@ class ArrayBackend:
         bool
             True if array is CuPy array on GPU
         """
-        return CUPY_AVAILABLE and isinstance(arr, cp.ndarray)
+        return is_gpu_array(arr)
     
     def zeros(self, shape, dtype=np.float32):
         """

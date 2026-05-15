@@ -61,8 +61,8 @@ class StereoEngine:
             logger.info("Stereo engine: CPU SGM pipeline")
     
     def compute_depth(self, left: np.ndarray, right: np.ndarray,
-                     baseline: float, focal_length: float,
-                     motion_score: float = 0.0) -> np.ndarray:
+                     baseline: float = None, focal_length: float = None,
+                     motion_score: float = 0.0, **kwargs) -> np.ndarray:
         """
         Compute depth map from left/right stereo pair.
         
@@ -86,6 +86,13 @@ class StereoEngine:
         """
         if self.pipeline is None:
             raise RuntimeError("Stereo pipeline not initialized")
+
+        if baseline is None:
+            baseline = kwargs.pop("baseline_m", None)
+        if focal_length is None:
+            focal_length = kwargs.pop("fx", None)
+        if baseline is None or focal_length is None:
+            raise TypeError("compute_depth requires baseline/focal_length or baseline_m/fx")
         
         return self.pipeline.compute_depth(left, right, baseline, focal_length, motion_score)
     

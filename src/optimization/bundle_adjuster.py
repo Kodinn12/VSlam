@@ -10,6 +10,7 @@ from ..utils.linear_algebra import batch_inv3_gpu
 from ..utils.depth_utils import bilinear_depth_gpu
 
 from ..utils.cupy_utils import cupy_manager, cp, USE_CUPY
+from ..core.config import coerce_config_types
 xp = cp
 
 logger = get_logger(__name__)
@@ -84,19 +85,20 @@ class CuPyBundleAdjuster:
     """
 
     def __init__(self, K: np.ndarray, config: dict):
+        config = coerce_config_types(config)
         self.fx, self.fy = float(K[0, 0]), float(K[1, 1])
         self.cx, self.cy = float(K[0, 2]), float(K[1, 2])
         self.K           = K.copy()
         self.cfg         = config
-        self.win_size    = config.get("ba_window_size", 8)
-        self.max_iter    = config.get("ba_max_iterations", 12)
-        self.lam_init    = config.get("ba_lambda_init", 1e-3)
-        self.conv_delta  = config.get("ba_convergence_delta", 1e-6)
-        self.huber_c     = config.get("ba_huber_thresh", 2.0)
-        self.huber_c_depth = config.get("ba_depth_huber_thresh", 0.12)   # V33: separate depth Huber (metres)
-        self.ba_max_step_norm = config.get("ba_max_step_norm", 5.0)      # V33: per-DOF step clamp
-        self.min_track   = config.get("ba_min_track_length", 2)
-        self.max_reproj  = config.get("ba_max_reproj_error", 5.0)
+        self.win_size    = int(config.get("ba_window_size", 8))
+        self.max_iter    = int(config.get("ba_max_iterations", 12))
+        self.lam_init    = float(config.get("ba_lambda_init", 1e-3))
+        self.conv_delta  = float(config.get("ba_convergence_delta", 1e-6))
+        self.huber_c     = float(config.get("ba_huber_thresh", 2.0))
+        self.huber_c_depth = float(config.get("ba_depth_huber_thresh", 0.12))   # V33: separate depth Huber (metres)
+        self.ba_max_step_norm = float(config.get("ba_max_step_norm", 5.0))      # V33: per-DOF step clamp
+        self.min_track   = int(config.get("ba_min_track_length", 2))
+        self.max_reproj  = float(config.get("ba_max_reproj_error", 5.0))
         # V30: CuPy memory pool warm-up - pre-touch the default pool so the
         # first BA call doesn't pay the pool initialization penalty.
         if USE_CUPY:
