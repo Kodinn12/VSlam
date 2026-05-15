@@ -132,7 +132,7 @@ def test_slam_gpu_performance():
     print("\n=== SLAM GPU Performance Test ===")
     
     try:
-        from src.mapping.gaussian_bubbles import GaussianBubbleMap
+        from src.mapping.gaussian_bubbles import ChunkedBubbleMap
         import numpy as np
         
         # Create realistic test data
@@ -140,21 +140,18 @@ def test_slam_gpu_performance():
         
         # Optimized configuration for GPU performance
         config = {
-            'bubble_stride': 4,  # Reduced from 1 to 4
+            'bubble_stride': 4,
             'bubble_cuda': True,
             'use_gpu': True,
             'bubble_max_depth': 8.0,
             'bubble_min_depth': 0.1,
             'bubble_sigma_disp': 0.4,
             'bubble_sigma_pix': 0.2,
-            'bubble_sigma_par_max': 0.12,
-            'bubble_depth_edge_thresh': 0.40,
-            'use_raw_kernels': False,  # Disabled for stability
-            'use_zero_copy': True,
-            'use_lazy_mirrors': True
+            'chunk_size': 2.0,
+            'active_radius_chunks': 3
         }
         
-        bubble_map = GaussianBubbleMap(K, 0.1, config)
+        bubble_map = ChunkedBubbleMap(K, 0.1, config)
         
         # Test with realistic depth data
         depth = np.random.rand(400, 640) * 5.0 + 0.5
@@ -165,7 +162,7 @@ def test_slam_gpu_performance():
         
         # Time the GPU operations
         start_time = time.time()
-        mu, Sigma, w, col = bubble_map.backproject_frame(depth, pose, image, 4)
+        mu, w, col, Sig = bubble_map.backproject_frame(depth, pose, image, 4)
         gpu_time = (time.time() - start_time) * 1000
         
         print(f"GPU backprojection: {gpu_time:.2f} ms")

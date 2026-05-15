@@ -85,6 +85,7 @@ class GhostParticleRelocalizer:
                     self.particles.append((T_new, 0.0, np.zeros(6)))
         if mode in ["global", "hybrid"] and len(self.voxel_manager.keyframes) > 0:
             ng = num_particles // 2 if mode == "hybrid" else num_particles
+            kfs = self.voxel_manager.keyframes
             idx = np.random.choice(len(kfs), min(ng, len(kfs) * 2), replace=True)
             for i in idx[:ng]:
                 xi = np.random.normal(0, [0.1, 0.1, 0.1, 0.2, 0.2, 0.2])
@@ -93,7 +94,7 @@ class GhostParticleRelocalizer:
     def _render_bubbles_to_depth(self, T_wc, h, w, return_gpu=False):
         T_cw = PoseTransform.inverse(T_wc)
         R_cw, t_cw = T_cw[:3, :3], T_cw[:3, 3]
-        if len(self.bubble_map.mu) == 0:
+        if len(self.bubble_map) == 0:
             return (cp.zeros((h, w), dtype=cp.float32) if (return_gpu and USE_CUPY)
                     else np.zeros((h, w), dtype=np.float32))
         if USE_CUPY:
@@ -135,7 +136,7 @@ class GhostParticleRelocalizer:
 
     def _score_depth_alignment(self, T_wc, depth, use_voxel=True):
         h, w = depth.shape
-        if len(self.bubble_map.mu) < 100:
+        if len(self.bubble_map) < 100:
             return 0.0
         if USE_CUPY:
             # GPU zone: use only CuPy arrays
@@ -173,10 +174,10 @@ class GhostParticleRelocalizer:
             return float(cov * math.exp(-err * 5.0))
 
     def _score_photometric_consistency(self, T_wc, image, observed_depth):
-        if len(self.bubble_map.mu) < 100:
+        if len(self.bubble_map) < 100:
             return 0.0
         h, w = image.shape[:2]
-        n_samples = min(500, len(self.bubble_map.mu))
+        n_samples = min(500, len(self.bubble_map))
         if n_samples == 0:
             return 0.0
         if USE_CUPY and isinstance(self.bubble_map.weight, cp.ndarray):
@@ -367,6 +368,16 @@ class GhostParticleRelocalizer:
     def evolve_ghosts(self, depth, image, feats):
         if len(self.particles) == 0:
             return None, 0.0
+
+        # Ensure bubble map cache is valid before scoring multiple particles
+        if hasattr(self.bubble_map, "validate_cache"):
+            # Trigger property access to fill cache
+            _ = self.bubble_map.mu
+            _ = self.bubble_map.weight
+            _ = self.bubble_map.color
+            _ = self.bubble_map.Sigma
+            self.bubble_map.validate_cache()
+
         self.iteration += 1
 
         def _score_one(item):

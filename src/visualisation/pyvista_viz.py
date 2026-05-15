@@ -87,29 +87,47 @@ def _compute_follow_camera(points, previous=None, smooth=0.1):
     so the camera should sit at +Z and look into the reconstruction.
     """
     points = np.asarray(points, dtype=np.float32)
+    if len(points) == 0:
+        return previous if previous is not None else ((0, 2, 6), (0, 0, 0), (0, 1, 0))
+        
     center = points.mean(axis=0)
+    if not np.all(np.isfinite(center)):
+        return previous if previous is not None else ((0, 2, 6), (0, 0, 0), (0, 1, 0))
+        
     radius = max(np.linalg.norm(points - center, axis=1).max(), 0.5)
+    if not np.isfinite(radius) or radius > 1000.0: # Sanity check
+        radius = 0.5
+        
     dist = radius * 2.2
+    if not np.isfinite(dist):
+        dist = 1.1
     target_pos = np.array([
         center[0],
         center[1] + dist * 0.35,
         center[2] + dist,
     ], dtype=np.float32)
+    
+    if not np.all(np.isfinite(target_pos)):
+        return previous if previous is not None else ((0, 2, 6), (0, 0, 0), (0, 1, 0))
+        
     target = (target_pos, center, (0, 1, 0))
 
     if previous is None:
         return target
 
-    return (
-        (1 - smooth) * np.asarray(previous[0], dtype=np.float32) + smooth * target_pos,
-        (1 - smooth) * np.asarray(previous[1], dtype=np.float32) + smooth * center,
-        (0, 1, 0),
-    )
+    try:
+        new_pos = (1 - smooth) * np.asarray(previous[0], dtype=np.float32) + smooth * target_pos
+        new_center = (1 - smooth) * np.asarray(previous[1], dtype=np.float32) + smooth * center
+        if np.all(np.isfinite(new_pos)) and np.all(np.isfinite(new_center)):
+            return (new_pos, new_center, (0, 1, 0))
+    except Exception:
+        pass
+        
+    return target
 
 
-def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D", point_size=2.0):
+def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D Reconstruction", point_size=2.0):
     import os
-
     import numpy as np
     import pyvista as pv
 
@@ -122,6 +140,13 @@ def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D", point_size=2.0)
         plotter.set_background("black")
         plotter.enable_anti_aliasing()
         plotter.add_axes()
+        # Add a floor grid for spatial reference
+        grid = pv.Plane(center=(0, 0, 0), direction=(0, 1, 0), i_size=20, j_size=20)
+        plotter.add_mesh(grid, color="gray", opacity=0.2, style="wireframe")
+        # Add a small sphere at origin to verify renderer is alive
+        origin_sphere = pv.Sphere(radius=0.05)
+        plotter.add_mesh(origin_sphere, color="yellow", name="origin_marker")
+        
         plotter.camera_position = [(0, 2, 6), (0, 0, 0), (0, 1, 0)]
         plotter.show(interactive_update=True, auto_close=False)
         print("[PyVista] window ready")
@@ -132,13 +157,21 @@ def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D", point_size=2.0)
     actors = {}
     cam_pos = None
     smooth = 0.1
+    msg_count = 0
 
+    last_heartbeat = time.time()
     while True:
         if _pv_is_closed(plotter):
+            print("[PyVista] window closed by user")
             break
+
+        if time.time() - last_heartbeat > 5.0:
+            print(f"[PyVista] Heartbeat - loop alive, actors={len(plotter.actors)}")
+            last_heartbeat = time.time()
 
         try:
             data = q.get(timeout=0.05)
+            msg_count += 1
         except KeyboardInterrupt:
             break
         except queue.Empty:
@@ -156,21 +189,22 @@ def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D", point_size=2.0)
 
         bpts = data.get("bubble_pts")
         bcols = data.get("bubble_colors")
+        bscales = data.get("bubble_scales")
         vox_verts = data.get("voxel_verts")
         vox_faces = data.get("voxel_faces")
         vox_colors = data.get("voxel_colors")
         traj = data.get("trajectory")
 
-        _remove_actor(plotter, actors, "bc")
         if bpts is not None and len(bpts) > 0:
             try:
                 bpts = np.asarray(bpts, dtype=np.float32)
                 valid = np.all(np.isfinite(bpts), axis=1)
                 bpts = bpts[valid]
-                if bcols is not None:
-                    bcols = np.asarray(bcols, dtype=np.uint8)[valid]
-
+                
                 if len(bpts) > 0:
+                    if bcols is not None:
+                        bcols = np.asarray(bcols, dtype=np.uint8)[valid]
+
                     if bcols is None or len(bcols) != len(bpts):
                         depth = -bpts[:, 2]
                         dmin, dmax = depth.min(), depth.max()
@@ -184,21 +218,42 @@ def _viz_process_fn(q, window_size=(1280, 720), title="SLAM 3D", point_size=2.0)
 
                     cloud = pv.PolyData(bpts)
                     cloud["colors"] = bcols
-                    actors["bc"] = plotter.add_mesh(
+                    
+                    if bscales is not None:
+                        bscales = np.asarray(bscales, dtype=np.float32)[valid]
+                        # Normalize scales for visualization
+                        # We use it as a point size multiplier
+                        smin, smax = bscales.min(), bscales.max()
+                        if smax > smin:
+                            # Map scales to a reasonable multiplier range (e.g. 0.5x to 3.0x)
+                            cloud["point_scales"] = 0.5 + 2.5 * (bscales - smin) / (smax - smin)
+                        else:
+                            cloud["point_scales"] = np.ones(len(bpts))
+                    
+                    # Use name to replace existing actor instead of manual remove
+                    plotter.add_mesh(
                         cloud,
                         scalars="colors",
                         rgb=True,
                         style="points",
-                        point_size=point_size,
+                        point_size=point_size * 2.0, # Increase base point size for better density
                         render_points_as_spheres=True,
                         lighting=False,
+                        name="bubble_cloud"
                     )
 
                     cam_pos = _compute_follow_camera(bpts, previous=cam_pos, smooth=smooth)
                     plotter.camera_position = cam_pos
-
+                else:
+                    if msg_count % 10 == 0:
+                        print("[PyVista] Received empty/invalid bubble points")
             except Exception as e:
                 print(f"[PyVista] bubble render error: {e}")
+        else:
+            # If no bubbles, at least update camera if we have a trajectory
+            if traj is not None and len(traj) > 0:
+                cam_pos = _compute_follow_camera(traj, previous=cam_pos, smooth=smooth)
+                plotter.camera_position = cam_pos
 
         _remove_actor(plotter, actors, "voxels")
         if vox_verts is not None and len(vox_verts) > 0 and vox_faces is not None:
@@ -298,22 +353,49 @@ class PyVistaVisualizer:
 
         if show_bubbles and bubble_map is not None:
             try:
-                if hasattr(bubble_map, "get_point_cloud_pyvista"):
+                # Support for new decoupled ChunkedBubbleMap (Fix 5)
+                if hasattr(bubble_map, "_viz_queue"):
+                    try:
+                        # Get the latest from the queue (most recent frame)
+                        pts, colors, scales = None, None, None
+                        while not bubble_map._viz_queue.empty():
+                            pts, colors, scales = bubble_map._viz_queue.get_nowait()
+                        
+                        if pts is not None:
+                            render_data["bubble_pts"] = _to_pyvista(pts)
+                            if colors is not None:
+                                render_data["bubble_colors"] = (colors * 255.0).clip(0, 255).astype(np.uint8)
+                            if scales is not None:
+                                render_data["bubble_scales"] = scales
+                    except queue.Empty:
+                        pass
+                
+                # V54: Direct fallback from local stabilization buffer if queue is empty or forced
+                if "bubble_pts" not in render_data and hasattr(bubble_map, "get_stabilization_cloud"):
+                    pts_stab, cols_stab, scales_stab = bubble_map.get_stabilization_cloud(max_pts=self.max_points // 2)
+                    if pts_stab is not None:
+                        render_data["bubble_pts"] = _to_pyvista(pts_stab)
+                        if cols_stab is not None:
+                            render_data["bubble_colors"] = (cols_stab * 255.0).clip(0, 255).astype(np.uint8)
+                        if scales_stab is not None:
+                            render_data["bubble_scales"] = scales_stab
+
+                if "bubble_pts" not in render_data and hasattr(bubble_map, "get_point_cloud_pyvista"):
                     pts, colors = bubble_map.get_point_cloud_pyvista(max_points=self.max_points)
                     pts = _to_numpy(pts)
                     colors = np.asarray(colors, dtype=np.uint8) if colors is not None else None
-                else:
+                elif "bubble_pts" not in render_data:
                     pts, colors, _weights = bubble_map.get_full_point_cloud()
                     pts = _to_numpy(pts)
                     colors = _to_numpy(colors) if colors is not None else None
                     if colors is not None:
                         colors = (colors * 255.0).clip(0, 255).astype(np.uint8)
 
-                if pts is not None and len(pts) > 0:
+                if "bubble_pts" not in render_data and pts is not None and len(pts) > 0:
                     render_data["bubble_pts"] = _to_pyvista(pts)
                     if colors is not None and len(colors) == len(pts):
                         render_data["bubble_colors"] = colors
-                else:
+                elif "bubble_pts" not in render_data:
                     logger.debug("[Viz] no bubble points to render")
             except Exception as e:
                 logger.error(f"[Viz] bubble extraction error: {e}")
@@ -340,7 +422,14 @@ class PyVistaVisualizer:
                 )
 
         try:
-            self._q.put_nowait(render_data)
+            if render_data:
+                self._q.put_nowait(render_data)
+                if hasattr(self, "_last_push_time"):
+                    if time.time() - self._last_push_time > 2.0:
+                        print(f"[Viz] update_visualization: pushed data to subprocess queue (bubbles={render_data.get('bubble_pts') is not None})")
+                        self._last_push_time = time.time()
+                else:
+                    self._last_push_time = time.time()
         except queue.Full:
             logger.debug("[Viz] dropped visualization frame because queue is full")
         except Exception as e:

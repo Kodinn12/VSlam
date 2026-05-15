@@ -18,7 +18,8 @@ def _check_pyvista():
 
 class CupyVoxelGrid:
     def __init__(self, voxel_length=0.008, sdf_trunc=0.040, max_depth=3.0,
-                 grid_size=(320,320,320), origin=(-1.5,-1.5,-0.5), weight_max=200.0):
+                 grid_size=(256,256,256), origin=(-1.0,-1.0,-0.5), weight_max=200.0):
+        # V57: Reduced grid_size to 256^3 (~540MB) from 320^3 (~1.05GB) for 6GB GPUs
         self.voxel_length = voxel_length
         self.sdf_trunc = sdf_trunc
         self.max_depth = max_depth
@@ -238,7 +239,8 @@ class ThreadedCupyVoxelManager:
         self.baseline = baseline
         self.keyframes = []
         if config.get("enable_tsdf_voxels", True):
-            gs = config.get("voxel_grid_size", (320,320,320))
+            # V57: Reduced grid_size to 256^3 for 6GB GPUs
+            gs = config.get("voxel_grid_size", (256,256,256))
             self.voxel_grid = CupyVoxelGrid(
                 voxel_length=config["tsdf_voxel_length"],
                 sdf_trunc=config["tsdf_sdf_trunc"],
@@ -274,7 +276,8 @@ class ThreadedCupyVoxelManager:
                     with self._lock:
                         kfs_snap = list(self.keyframes)
                         if self.voxel_grid is not None:
-                            gs = self.config.get("voxel_grid_size", (320,320,320))
+                            # V57: Use 256^3 for 6GB GPUs
+                            gs = self.config.get("voxel_grid_size", (256,256,256))
                             self.voxel_grid = CupyVoxelGrid(
                                 voxel_length=self.config["tsdf_voxel_length"],
                                 sdf_trunc=self.config["tsdf_sdf_trunc"],

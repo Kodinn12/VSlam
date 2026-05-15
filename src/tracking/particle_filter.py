@@ -212,6 +212,17 @@ class SE3ParticleFilter:
     def update(self, pts3d_w, pts2d):
         if pts3d_w is None or len(pts3d_w) < 4:
             return
+            
+        # Filter non-finite points to prevent PF collapse
+        finite_mask = np.all(np.isfinite(pts3d_w), axis=1) & np.all(np.isfinite(pts2d), axis=1)
+        if not np.any(finite_mask):
+            return
+        if not np.all(finite_mask):
+            pts3d_w = pts3d_w[finite_mask]
+            pts2d = pts2d[finite_mask]
+            if len(pts3d_w) < 4:
+                return
+
         if USE_CUPY and len(pts3d_w) >= 4:
             M = min(len(pts3d_w), 2500)
             pts3d_g = cp.asarray(pts3d_w[:M], dtype=cp.float64)

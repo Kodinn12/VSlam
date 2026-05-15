@@ -6,7 +6,7 @@ from .logger import get_logger
 
 logger = get_logger(__name__)
 
-from .cupy_utils import cupy_manager, USE_TORCH
+from .cupy_utils import cupy_manager, USE_TORCH, cp
 xp = cupy_manager.get_array_module()
 USE_CUPY = cupy_manager.is_available()
 
@@ -316,22 +316,34 @@ def batch_log_se3_gpu(T_batch):
 
 
 def se3_inv_gpu(T_gpu):
-    """Inverse of a single SE(3) matrix on GPU."""
-    if not USE_CUPY:
-        T = np.asarray(T_gpu)
+    """Inverse of SE(3) matrix (or batch of matrices) on GPU."""
+    xp_local = cp if USE_CUPY else np
+    T = xp_local.asarray(T_gpu, dtype=xp_local.float64)
+    
+    if T.ndim == 2:
+        # Single matrix (4, 4)
         R = T[:3, :3]
         t = T[:3, 3]
-        Ti = np.eye(4)
-        Ti[:3, :3] = R.T
-        Ti[:3, 3] = -R.T @ t
+        Rt = R.T
+        Ti = xp_local.eye(4, dtype=xp_local.float64)
+        Ti[:3, :3] = Rt
+        Ti[:3, 3] = -(Rt @ t)
         return Ti
-    T_gpu = xp.asarray(T_gpu, dtype=xp.float64)
-    R = T_gpu[:3, :3]
-    Rt = R.T
-    Ti = xp.eye(4, dtype=xp.float64)
-    Ti[:3, :3] = Rt
-    Ti[:3, 3] = -(Rt @ T_gpu[:3, 3])
-    return Ti
+    elif T.ndim == 3:
+        # Batch of matrices (N, 4, 4)
+        N = T.shape[0]
+        R = T[:, :3, :3]
+        t = T[:, :3, 3]
+        Rt = xp_local.swapaxes(R, 1, 2)
+        Ti = xp_local.zeros((N, 4, 4), dtype=xp_local.float64)
+        Ti[:, 3, 3] = 1.0
+        Ti[:, :3, :3] = Rt
+        # t is (N, 3), Rt is (N, 3, 3)
+        # We need (N, 3, 3) @ (N, 3, 1) -> (N, 3, 1) -> (N, 3)
+        Ti[:, :3, 3] = -xp_local.matmul(Rt, t[:, :, None])[:, :, 0]
+        return Ti
+    else:
+        raise ValueError(f"se3_inv_gpu: Expected 2D or 3D input, got {T.ndim}D shape {T.shape}")
 
 
 def batch_matmul_gpu(A, B):

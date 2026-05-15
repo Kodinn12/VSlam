@@ -12,13 +12,13 @@ enable_imu: true
 
 # SuperPoint / LightGlue - GPU Optimized
 max_num_keypoints: 2048
-match_threshold: 0.08
-min_matches_tracking: 15
-tracking_inlier_threshold: 2.5
+match_threshold: 0.12
+min_matches_tracking: 10
+tracking_inlier_threshold: 3.0
 
 # LM Refiner - GPU Optimized
-lm_max_iterations: 40
-lm_min_inliers: 8
+lm_max_iterations: 50
+lm_min_inliers: 6
 lm_initial_lambda: 0.0005
 lm_convergence_delta: 1e-9
 lm_use_gpu: true
@@ -27,6 +27,11 @@ lm_use_gpu: true
 huber_threshold_reproj: 1.2
 huber_threshold_depth: 0.08
 
+# gpu_config.yaml updates
+match_threshold: 0.12          # Was 0.08 (Relaxed for better tracking)
+min_matches_tracking: 10       # Was 15 (More robust in sparse areas)
+bubble_min_weight: 1.5         # Was 3.0 (Allow points to show up faster)
+bubble_max_depth: 6.0          # Cap depth to avoid noisy distant points
 # TSDF & Mapping - GPU Optimized
 tsdf_voxel_length: 0.008
 tsdf_sdf_trunc: 0.020
@@ -76,24 +81,33 @@ pf_karcher_iters: 12
 pf_confidence_scale: 50.0
 pf_adaptive_obs_scale: 0.02
 
-# Gaussian Bubbles - GPU Optimized with Hierarchical Pruning
-bubble_stride: 1
+# Chunked Bubble Map Parameters (V51: Stabilization First)
+chunk_size: 4.0
+active_radius_chunks: 3
+min_weight_prune: 0.005 # Relaxed for visibility
+max_bubbles_per_chunk: 100000
+periodic_prune_interval: 100 # Less frequent pruning
+max_new_bubbles_per_frame: 100000
+bubble_stride: 2 # Faster but still dense
+bubble_visualization_threshold: 0.005
+max_visualisation_points: 150000
+enable_chunk_offloading: true
+max_resident_chunks: 20
+
+# Gaussian Bubbles - Stabilization Parameters
+bubble_mahal_thresh: 6.0 # More permissive
+bubble_min_weight: 1.0 # Lower threshold for insertion
+bubble_fusion_radius_scale: 1.0 # Tighter fusion initially
+bubble_rebuild_every: 1
+bubble_cuda: true
+bubble_min_depth: 0.1
+bubble_max_depth: 8.0 # Increased range
+bubble_sigma_par_max: 0.25 # More permissive
+bubble_trace_max: 1.2 # More permissive
+bubble_depth_edge_thresh: 0.5 # Relaxed edge filtering
+bubble_force_gpu_processing: true
 bubble_sigma_disp: 0.4
 bubble_sigma_pix: 0.2
-bubble_mahal_thresh: 4.0
-bubble_min_weight: 3.0
-bubble_max_bubbles: 500000
-bubble_fusion_radius_scale: 1.5
-bubble_rebuild_every: 2
-bubble_cuda: true
-bubble_visualization_threshold: 0.02
-bubble_prune_frequency: 10
-bubble_min_depth: 0.08
-bubble_max_depth: 8.0
-bubble_sigma_par_max: 0.12
-bubble_trace_max: 0.60
-bubble_depth_edge_thresh: 0.20
-bubble_force_gpu_processing: true
 
 # Hierarchical Bubble Pruning
 hierarchical_pruning_enabled: true
@@ -156,8 +170,8 @@ save_depth_maps: false  # Disabled - no file saving
 output_folder: "scan_output_gpu"  # Disabled - no folder creation
 enable_3d_visualization: true
 enable_pyvista_visualization: true
-visualization_update_frequency: 8
-max_visualization_points: 1000000  # Increased for enhanced reconstruction
+visualization_update_frequency: 10
+max_visualization_points: 150000  # Reduced for 6GB GPU stability
 visualization_point_size: 2.6
 show_camera_trajectory: true
 show_bubbles: true
@@ -172,11 +186,11 @@ adaptive_point_size: true  # Dynamic sizing based on distance
 measurement_tools_enabled: true  # Interactive distance measurement
 
 # GPU Performance Optimization
-gpu_memory_pool_limit: 6442450944
-gpu_pinned_memory_limit: 1073741824
+gpu_memory_pool_limit: 3758096384  # 3.5GB limit to leave room for PyTorch and OS
+gpu_pinned_memory_limit: 536870912
 gpu_prefer_large_kernels: true
 gpu_enable_streaming: true
-gpu_force_memory_usage: true
+gpu_force_memory_usage: false  # Disable to avoid aggressive pre-allocation OOM
 
 # GPU Covariance Stability
 covariance_regularization: 1e-6

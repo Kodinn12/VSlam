@@ -889,7 +889,7 @@ def gpu_einsum(equation, *operands, use_gpu=True):
 
 def rotate_covariance_batch(R, Sigma_batch):
     """
-    Rotate batch of covariance matrices: Sigma_rot = R @ Sigma @ R.T
+    Rotate batch of covariance matrices: Sigma_rot = R @ Sigma @ R.T (V59 Robust)
     
     Args:
         R: (3, 3) rotation matrix
@@ -898,11 +898,23 @@ def rotate_covariance_batch(R, Sigma_batch):
     Returns:
         (N, 3, 3) rotated covariance matrices
     """
-    xp = cupy_manager.get_array_module()
+    is_gpu_array = bool(
+        USE_CUPY and
+        cp is not np and
+        hasattr(cp, "ndarray") and
+        isinstance(Sigma_batch, cp.ndarray)
+    )
+    xp = cp if is_gpu_array else np
     
     try:
-        Rb = R[None, :, :]  # (1,3,3)
-        Rt = R.T[None, :, :]  # (1,3,3)
+        # Ensure R is on the same device as Sigma_batch
+        if is_gpu_array:
+            R_g = xp.asarray(R, dtype=Sigma_batch.dtype)
+        else:
+            R_g = np.asarray(R, dtype=Sigma_batch.dtype)
+
+        Rb = R_g[None, :, :]  # (1,3,3)
+        Rt = R_g.T[None, :, :]  # (1,3,3)
         
         # Proper batch matrix multiplication: R @ Sigma @ R.T
         Sigma_rot = xp.matmul(xp.matmul(Rb, Sigma_batch), Rt)
@@ -919,7 +931,6 @@ def rotate_covariance_batch(R, Sigma_batch):
     except Exception as e:
         print("[CUDA FAIL] fallback CPU:", e)
         
-        import numpy as np
         Sigma_cpu = Sigma_batch.get() if hasattr(Sigma_batch, "get") else Sigma_batch
         
         # CPU fallback

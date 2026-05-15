@@ -65,24 +65,30 @@ pf_karcher_iters: 8
 pf_confidence_scale: 40.0
 pf_adaptive_obs_scale: 0.03
 
+# Chunked Bubble Map Parameters (New Redesign - Updated for Maximum Density)
+chunk_size: 4.0
+active_radius_chunks: 2
+min_weight_prune: 0.02
+max_bubbles_per_chunk: 100000
+periodic_prune_interval: 40
+max_new_bubbles_per_frame: 100000
+bubble_stride: 1
+bubble_visualization_threshold: 0.02
+max_visualisation_points: 120000
+
 # Gaussian Bubbles
-bubble_stride: 2
-bubble_sigma_disp: 0.5
-bubble_sigma_pix: 0.3
 bubble_mahal_thresh: 5.0
 bubble_min_weight: 2.0
-bubble_max_bubbles: 500000
 bubble_fusion_radius_scale: 2.0
 bubble_rebuild_every: 4
 bubble_cuda: true
-bubble_visualization_threshold: 0.02
-bubble_prune_frequency: 20
 bubble_min_depth: 0.1
 bubble_max_depth: 8.0
 bubble_sigma_par_max: 0.15
 bubble_trace_max: 0.75
 bubble_depth_edge_thresh: 0.20    # tighter edge filter → fewer holes in surfaces
-max_new_bubbles_per_frame: 80000  # stride=2 on 640x400 gives ~64k candidates
+bubble_sigma_disp: 0.5
+bubble_sigma_pix: 0.3
 fusion_distance_threshold: 0.02   # smaller voxel cell means less aggressive merging
 max_sigma_trace: 2.0              # Level-0 pruning: remove bubbles with covariance trace > this (degenerate)
 

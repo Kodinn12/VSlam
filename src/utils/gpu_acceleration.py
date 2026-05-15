@@ -52,7 +52,14 @@ class GPUAccelerationManager:
         if USE_CUPY and self.acceleration_mode != 'cpu_only':
             try:
                 # Get optimization settings from config
-                memory_limit = self.config.get('gpu_memory_pool_limit', 2147483648)  # 2GB
+                # V59: Conservative memory limit (2.5GB) for 6GB cards
+                memory_limit = self.config.get('gpu_memory_pool_limit', 2500 * 1024 * 1024)
+                
+                # V59: Cap memory limit at 2500MB for 6GB cards to allow Torch/Display room
+                if memory_limit > 2500 * 1024 * 1024:
+                    memory_limit = 2500 * 1024 * 1024
+                    logger.info(f" [VRAM] Capping CuPy memory pool at 2500MB for stability")
+                
                 pinned_limit = self.config.get('gpu_pinned_memory_limit', 536870912)  # 512MB
                 
                 # Setup optimized memory pools
@@ -64,20 +71,17 @@ class GPUAccelerationManager:
                 # Note: PinnedMemoryPool doesn't support set_limit() in current CuPy version
                 
                 # Aggressive GPU memory pre-allocation (adjusted for available memory)
-                if self.config.get('gpu_force_memory_usage', True):
+                if self.config.get('gpu_force_memory_usage', False): # V57: Default to False
                     # Pre-allocate moderate GPU arrays to force memory usage without OOM
                     large_arrays = []
                     try:
-                        # Start with smaller arrays to avoid OOM
-                        for i in range(3):
-                            arr = cp.zeros((20000, 3), dtype=cp.float32)  # 20K x 3 x 4 bytes = ~240MB each
+                        # V56: More conservative pre-allocation for 6GB GPUs
+                        # Pre-allocate 2 arrays of ~50MB each
+                        for i in range(2):
+                            arr = cp.zeros((2000, 3000), dtype=cp.float32)  # 2K x 3K x 4 bytes = ~24MB each
                             large_arrays.append(arr)
                         
-                        # Perform some computations to keep GPU active
-                        for arr in large_arrays:
-                            temp = cp.sum(arr * 2.0)  # Simple computation
-                        
-                        logger.info(f"GPU memory pre-allocated: {len(large_arrays)} arrays (~240MB each)")
+                        logger.info(f"GPU memory pre-allocated: {len(large_arrays)} arrays (~24MB each)")
                     except Exception as mem_e:
                         logger.warning(f"GPU memory pre-allocation failed: {mem_e}")
                         # Fallback to smaller allocation

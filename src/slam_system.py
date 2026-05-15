@@ -6,7 +6,7 @@ from .features.superpoint_lightglue import SuperPointLightGlue
 from .tracking.particle_filter import SE3ParticleFilter
 from .tracking.pose_refiner import LMPoseRefiner
 from .tracking.relocalizer import GhostParticleRelocalizer
-from .mapping.gaussian_bubbles import GaussianBubbleMap
+from .mapping.gaussian_bubbles import ChunkedBubbleMap
 from .mapping.tsdf_voxel import ThreadedCupyVoxelManager
 from .mapping.keyframe import Keyframe
 from .mapping.keyframe_manager import KeyframeManager
@@ -34,7 +34,7 @@ import math
 from typing import Optional, Dict, List, Tuple
 from enum import Enum
 
-from .utils.cupy_utils import cupy_manager, USE_TORCH
+from .utils.cupy_utils import cupy_manager, USE_TORCH, cp
 
 # Lazy accessor for the array module (xp) to prevent import-time GPU initialization
 class _LazyXP:
@@ -479,10 +479,10 @@ class RobustStereoSLAM:
         # ----------------------------------------------------------------
         self.lm_refiner = LMPoseRefiner(
             K=self.K_rect_proc,
-            max_iter   =config.get("lm_max_iterations", 20),
-            lam0       =config.get("lm_initial_lambda", 1e-3),
-            conv_delta =config.get("lm_convergence_delta", 1e-7),
-            huber_thresh=config.get("huber_threshold_reproj", 2.0),
+            max_iter   =int(config.get("lm_max_iterations", 20)),
+            lam0       =float(config.get("lm_initial_lambda", 1e-3)),
+            conv_delta =float(config.get("lm_convergence_delta", 1e-7)),
+            huber_thresh=float(config.get("huber_threshold_reproj", 2.0)),
             use_gpu    =config.get("lm_use_gpu", True))
 
         # ----------------------------------------------------------------
@@ -524,7 +524,7 @@ class RobustStereoSLAM:
             'use_cupy_voxel_grid': self.accel_config['gpu_tsdf']
         })
         
-        self.bubble_map = GaussianBubbleMap(
+        self.bubble_map = ChunkedBubbleMap(
             K=self.K_rect_proc, baseline=self.baseline, config=gpu_config)
 
         # ----------------------------------------------------------------
@@ -534,16 +534,18 @@ class RobustStereoSLAM:
         print(" [KF] Multi-view keyframe manager initialized")
         
         # Set keyframe manager in bubble map for multi-view fusion
-        self.bubble_map.threaded_manager.keyframe_manager = self.keyframe_manager
+        # self.bubble_map.threaded_manager.keyframe_manager = self.keyframe_manager
 
         # ----------------------------------------------------------------
         # CUPY VOXEL MANAGER + LOOP DETECTOR + RELOCALIZER (GPU Accelerated)
         # ----------------------------------------------------------------
+        # V59: Disable TSDF Voxel Grid to save 500MB+ VRAM on 6GB GPUs
+        gpu_config["enable_tsdf_voxels"] = False
         self.voxel_manager = ThreadedCupyVoxelManager(
             gpu_config, self.K_rect_proc, self.baseline)
         
         accel_backend = "CuPy" if cupy_manager.is_available() else ("TorchXP" if USE_TORCH else "NumPy")
-        print(f" [GPU] Voxel manager initialized using {accel_backend} backend")
+        print(f" [GPU] Voxel manager initialized using {accel_backend} backend (TSDF=OFF)")
         self.loop_detector = LoopClosureDetector(
             config, self.K_rect_proc, self.sp_lg)
         self.relocalizer = GhostParticleRelocalizer(
@@ -881,6 +883,13 @@ class RobustStereoSLAM:
                  (v_v - self.cy) * z_v / self.fy, z_v])
             pts_world = PoseTransform.transform_points(pose_prev, pts_cam)
             curr_2d   = kp_c[valid_z]
+            
+            # Numerical stability: filter any non-finite world points (V45)
+            finite_mask = np.all(np.isfinite(pts_world), axis=1)
+            if not np.all(finite_mask):
+                pts_world = pts_world[finite_mask]
+                curr_2d = curr_2d[finite_mask]
+
         # re-alias for PnP call below
         if not isinstance(pts_world, np.ndarray):
             pts_world = np.asarray(pts_world)
@@ -1186,14 +1195,19 @@ class RobustStereoSLAM:
         imu_hold_max_f = self.config.get("imu_holdover_max_frames", 10)
         imu_hold_max_t = self.config.get("imu_holdover_max_dt", 0.20)
 
-        should_update_bubble = (self.frame_id % 2 == 0)
-        # Skip map updates when IMU confirms the camera is stationary.
-        # Same pose -> no new depth information to integrate into either
-        # the Gaussian bubble map or the TSDF voxel grid.
+        # V51: Stabilization-first mapping gating. 
+        # Force integration during initialization to ensure map bootstraps.
+        is_initializing = (self.frame_id < 100)
+        should_update_bubble = (self.frame_id % 1 == 0) # Force every frame
+        
+        # Skip map updates when IMU confirms the camera is stationary, 
+        # but only after initial stabilization phase.
         _imu_static = has_imu and self.imu.is_stationary()
-        if _imu_static:
+        
+        if _imu_static and not is_initializing:
             should_update_bubble = False
-        should_update_voxel = (not _imu_static)
+            
+        should_update_voxel = (not _imu_static) or is_initializing or (self.frame_id == 1)
 
         # ────────────────────────────────────────────────────────────────
         # STATE MACHINE
@@ -1373,12 +1387,20 @@ class RobustStereoSLAM:
                         _zupt_fired = True
 
                     self.curr_pose = self.pf.estimate()
-                    tracked        = True
-                    self.consecutive_failures = 0
-                    self._imu_holdover_frames = 0
-                    self._imu_holdover_dt     = 0.0
-                    # ── Save inlier count for next frame's PF noise scaling ──
-                    self._prev_num_inliers    = num_inliers
+                    
+                    # Divergence detection
+                    if not np.all(np.isfinite(self.curr_pose)):
+                        print(f" [WARN] Tracking diverged (non-finite pose) at frame {self.frame_id}")
+                        self.state = TrackingState.RELOCALIZING
+                        self.curr_pose = self.prev_frame_pose.copy() if self.prev_frame_pose is not None else np.eye(4)
+                        tracked = False
+                    else:
+                        tracked        = True
+                        self.consecutive_failures = 0
+                        self._imu_holdover_frames = 0
+                        self._imu_holdover_dt     = 0.0
+                        # ── Save inlier count for next frame's PF noise scaling ──
+                        self._prev_num_inliers    = num_inliers
 
                     # ── (8) VISUAL SLAM -> IMU VELOCITY CORRECTION ────────────
                     # Use the ground-truth visual pose change to correct the
@@ -1470,30 +1492,33 @@ class RobustStereoSLAM:
                     self.relocalizer.scatter_hypotheses(
                         self.curr_pose, num_particles=256, mode="hybrid")
 
-        # Force bubble updates every frame for testing (moved outside state machine)
-        if True:  # Always update bubbles for testing
-            if self.frame_id % 10 == 0:
-                print(f" [BUBBLE] Frame {self.frame_id}: forcing bubble update")
-            # Always update for testing
-            # Use helper functions to get correct GPU/CPU arrays
-            _bub_depth = self._get_depth_for_bubbles(depth_gpu, depth)
-            _bub_img = self._get_image_for_bubbles(left_img_rect_gpu, left_img_rect)
+        # Chunked Bubble Map Updates (V52 Async Reconstruction)
+        # ONLY update if tracking is successful or we are initializing (V46/V51)
+        if (tracked or self.frame_id == 1) and self.state in [TrackingState.TRACKING, TrackingState.RECOVERY, TrackingState.UNINITIALIZED]:
+            self.bubble_map.frame_counter = self.frame_id
+            self.bubble_map.update_active_set(self.curr_pose[:3, 3])
             
-            # Debug: Check depth data
-            if USE_CUPY and isinstance(_bub_depth, xp.ndarray):
-                depth_min = float(_bub_depth.min())
-                depth_max = float(_bub_depth.max())
-                depth_valid = int(xp.sum(_bub_depth > 0))
-            else:
-                depth_min = float(_bub_depth.min())
-                depth_max = float(_bub_depth.max())
-                depth_valid = int(np.sum(_bub_depth > 0))
+            # Hybrid Gating: Force every frame during initialization or if moved
+            force_mapping = is_initializing or (not _imu_static and self.bubble_map.should_update_bubble(self.curr_pose))
             
-            if self.frame_id % 20 == 0:
-                print(f" [BUBBLE] Frame {self.frame_id}: depth range {depth_min:.3f}-{depth_max:.3f}m, valid pixels: {depth_valid}")
+            if force_mapping:
+                # V58: Increased stride to 8 to reduce point density and VRAM pressure
+                stride = self.config.get("bubble_stride", 8)
+                # Submit to async manager (Fix 1, 3)
+                self.bubble_map.threaded_manager.submit(
+                    depth_gpu, self.curr_pose.copy(), left_img_rect_gpu, 
+                    stride=stride, is_initializing=is_initializing
+                )
+
+            # Periodic pruning every 30 frames (Fix 4)
+            periodic_prune_interval = self.config.get("periodic_prune_interval", 30)
+            if self.frame_id % periodic_prune_interval == 0:
+                self.bubble_map.prune_active()
             
-            self.bubble_map.threaded_manager.queue_update(
-                _bub_depth, self.curr_pose, _bub_img, bubble_motion_scale)
+        # Also push on regular intervals even if camera is stationary
+        viz_freq = self.config.get("visualization_update_frequency", 5)
+        if self.frame_id % viz_freq == 0:
+            self.bubble_map.push_to_visualizer()
 
         # Voxel grid updates (if enabled)
         if self.config.get("use_cupy_voxel_grid", True) and should_update_voxel:
@@ -1507,8 +1532,8 @@ class RobustStereoSLAM:
                                    else left_img_rect)
                 self.voxel_manager.integrate_frame(
                     img_for_voxel, depth_for_voxel, self.curr_pose, intrinsic)
-            if self.frame_id % 100 == 0 and len(self.bubble_map.mu) > 0:
-                print(f" [MAP] Updated: {len(self.bubble_map.mu)} bubbles")
+            if self.frame_id % 100 == 0 and len(self.bubble_map) > 0:
+                print(f" [MAP] Updated: {len(self.bubble_map)} bubbles")
 
         if tracked or self.frame_id == 1:
             # (7) Pass IMU omega to _handle_keyframe for threshold adaptation
@@ -1553,11 +1578,10 @@ class RobustStereoSLAM:
                 self.relocalizer_attempts = 0          # <- BUG FIX: reset on success
                 self._imu_holdover_frames = 0; self._imu_holdover_dt = 0.0
                 if should_update_bubble:
-                    # Use helper functions to get correct GPU/CPU arrays
-                    _reloc_depth = self._get_depth_for_bubbles(depth_gpu, depth)
-                    _reloc_img = self._get_image_for_bubbles(left_img_rect_gpu, left_img_rect)
-                    self.bubble_map.threaded_manager.queue_update(
-                        _reloc_depth, self.curr_pose, _reloc_img, bubble_motion_scale)
+                    self.bubble_map.threaded_manager.submit(
+                        depth_gpu, self.curr_pose.copy(), left_img_rect_gpu,
+                        stride=self.config.get("bubble_stride", 8),
+                        is_initializing=is_initializing)
                 if self.config.get("use_cupy_voxel_grid", True) and should_update_voxel:
                     self.voxel_manager.integrate_frame(
                         left_img_rect, depth, self.curr_pose, intrinsic)
@@ -1602,11 +1626,10 @@ class RobustStereoSLAM:
                     if self.recovery_count >= self.recovery_buffer.maxlen:
                         self.state = TrackingState.TRACKING
                     if should_update_bubble:
-                        # Use helper functions to get correct GPU/CPU arrays
-                        _rec_depth = self._get_depth_for_bubbles(depth_gpu, depth)
-                        _rec_img = self._get_image_for_bubbles(left_img_rect_gpu, left_img_rect)
-                        self.bubble_map.threaded_manager.queue_update(
-                            _rec_depth, self.curr_pose, _rec_img, bubble_motion_scale)
+                        self.bubble_map.threaded_manager.submit(
+                            depth_gpu, self.curr_pose.copy(), left_img_rect_gpu,
+                            stride=self.config.get("bubble_stride", 8),
+                            is_initializing=is_initializing)
                     if self.config.get("use_cupy_voxel_grid", True) and should_update_voxel:
                         self.voxel_manager.integrate_frame(
                             left_img_rect, depth, self.curr_pose, intrinsic)
@@ -1673,8 +1696,8 @@ class RobustStereoSLAM:
         if self.config.get("enable_3d_visualization", True):
             if self.frame_id % self.config.get("visualization_update_frequency", 1) == 0:
                 if self.visualizer and self.visualizer.is_active():
-                    # Set keyframe manager reference for global reconstruction visualization
-                    self.bubble_map.keyframe_manager = self.keyframe_manager
+                    # The visualizer now consumes from the bubble_map._viz_queue
+                    # so we just need to pass the other managers
                     self.visualizer.update_visualization(
                         bubble_map=self.bubble_map,
                         voxel_manager=self.voxel_manager,
@@ -1785,7 +1808,7 @@ class RobustStereoSLAM:
             self._last_bubble_count = 0
             return 1.0  # First frame is always novel
         
-        current_bubble_count = len(self.bubble_map.mu)
+        current_bubble_count = len(self.bubble_map)
         if self._last_bubble_count == 0:
             novelty_score = 1.0
         else:
@@ -1804,15 +1827,20 @@ class RobustStereoSLAM:
         
         # Motion criteria
         translation = np.linalg.norm(pose[:3, 3] - last_pose[:3, 3])
-        rotation = np.linalg.norm(pose[:3, :3] - last_pose[:3, :3])
+        rotation = PoseTransform.angular_distance(pose[:3, :3], last_pose[:3, :3])
         
         # Scene novelty
         novelty = new_bubbles / max(total_bubbles, 1)
         
+        # Thresholds from config
+        t_thr = self.config.get("keyframe_translation_threshold", 0.15)
+        r_thr = np.radians(self.config.get("keyframe_rotation_threshold", 5.0))
+        n_thr = self.config.get("keyframe_novelty_threshold", 0.10)
+        
         # Conditions
-        motion_trigger = translation > 0.15 or rotation > 0.05
-        novelty_trigger = novelty > 0.05
-        periodic_trigger = (self.frame_id % 10 == 0)
+        motion_trigger = translation > t_thr or rotation > r_thr
+        novelty_trigger = novelty > n_thr
+        periodic_trigger = (frame_id % 20 == 0) # Tighter periodic fallback
         
         return motion_trigger or novelty_trigger or periodic_trigger
 
@@ -1859,7 +1887,8 @@ class RobustStereoSLAM:
                 print(" [V37] Async correction -> scheduling TSDF reintegration")
                 try:
                     self.voxel_manager.reintegrate_map()
-                    self.bubble_map.reintegrate_map(self.voxel_manager.keyframes)
+                    if hasattr(self.bubble_map, "reintegrate_map"):
+                        self.bubble_map.reintegrate_map(self.voxel_manager.keyframes)
                 except Exception as _re:
                     print(f" [V37] Reintegration skipped: {_re}")
 
@@ -1875,9 +1904,8 @@ class RobustStereoSLAM:
         # Calculate new bubbles for novelty
         if not hasattr(self, '_last_bubble_count'):
             self._last_bubble_count = 0
-        current_bubble_count = len(self.bubble_map.mu)
+        current_bubble_count = len(self.bubble_map)
         new_bubbles = max(0, current_bubble_count - self._last_bubble_count)
-        self._last_bubble_count = current_bubble_count
         
         # Use simple and reliable keyframe criteria
         is_kf = self.should_add_keyframe(
@@ -1885,11 +1913,14 @@ class RobustStereoSLAM:
             new_bubbles, current_bubble_count, self.frame_id
         )
         
-        # Always add first frame as keyframe
+        # Always add first frame as keyframe (frame_id starts at 0, incremented before this call)
         is_kf = is_kf or (self.frame_id == 1)
         
         if not is_kf:
             return False
+        
+        # Update last bubble count ONLY when a keyframe is added
+        self._last_bubble_count = current_bubble_count
         
         # Debug logging for keyframe decision
         translation = np.linalg.norm(rel_T[:3, 3])
@@ -1911,6 +1942,11 @@ class RobustStereoSLAM:
         
         # Add to the new global KeyframeManager
         self.keyframe_manager.add_keyframe(new_kf)
+        
+        # Transition from UNINITIALIZED to TRACKING on first keyframe
+        if self.state == TrackingState.UNINITIALIZED:
+            self.state = TrackingState.TRACKING
+            print(f" [SLAM] System initialized and transitioning to TRACKING state at frame {self.frame_id}")
 
         # Check if it is done and apply the correction if so.
         lc_detected, lc_corrected_pose = self._async_opt.take_loop_closure_result()
@@ -1941,7 +1977,8 @@ class RobustStereoSLAM:
             new_kf.pose = lc_corrected_pose.copy()
             self.pf.reset(lc_corrected_pose)
             self.voxel_manager.reintegrate_map()
-            self.bubble_map.reintegrate_map(self.voxel_manager.keyframes)
+            if hasattr(self.bubble_map, "reintegrate_map"):
+                self.bubble_map.reintegrate_map(self.voxel_manager.keyframes)
             if self.imu is not None:
                 self.imu.correct_R_world(self.curr_pose[:3, :3])
             print(f" [LOOP/async] Correction applied; IMU world rotation re-anchored")
@@ -2015,7 +2052,7 @@ class RobustStereoSLAM:
             spread    = np.std(positions, axis=0)
             imu_info  = (f"IMU w={imu_omega:.2f}rad/s" if self.imu else "IMU:OFF")
             print(f" [KF] #{self.frame_id:>5d} | Feats:{len(feats['keypoints']):>4d} | "
-                  f"Inliers:{num_inliers:>3d} | Bubbles:{len(self.bubble_map.mu):>6d} | "
+                  f"Inliers:{num_inliers:>3d} | Bubbles:{len(self.bubble_map):>6d} | "
                   f"State:{self.state.name} | {imu_info}")
         return True
 
@@ -2155,29 +2192,42 @@ class RobustStereoSLAM:
     def _draw_hud(self, feats, left_img_rect, depth_fps, tracked, num_inliers, t0):
         """
         Build 2D HUD windows.
-
-        Depth window : OAK-D StereoDepth - adaptive Turbo colourmap (GPU),
-                       upscaled to 1280×800, with coverage % and FPS overlay.
-        Feature window: rectified left with SuperPoint keypoints.
         """
         # ── StereoDepth depth visualisation (mirrors CPUOCKD viewer) ────
         if self._last_depth_gpu is not None:
             try:
+                # V57: Aggressive cleanup before HUD allocation
+                if USE_CUPY:
+                    cp.get_default_memory_pool().free_all_blocks()
+
                 d_gpu = self._last_depth_gpu   # xp.ndarray float32 metres
                 # Convert to millimetres for percentile-based adaptive range
                 d_mm_gpu = d_gpu * 1000.0
-                valid    = d_mm_gpu[d_mm_gpu > 0]
-                if valid.size > 10:
-                    d_min = float(xp.percentile(valid,  1).item()) if USE_CUPY \
-                            else float(np.percentile(valid,  1))
-                    d_max = float(xp.percentile(valid, 99).item()) if USE_CUPY \
-                            else float(np.percentile(valid, 99))
-                    if d_max - d_min < 200:          # minimum 200 mm range
-                        mid   = (d_min + d_max) / 2
-                        d_min = max(0.0, mid - 100)
-                        d_max = mid + 100
+                
+                # V57: More memory-efficient percentile calculation
+                # Avoid mask indexing 'd_mm_gpu[d_mm_gpu > 0]' which creates a copy
+                if USE_CUPY:
+                    # Use a subsampled version for percentile to save memory
+                    sub = d_mm_gpu[::4, ::4].ravel()
+                    valid_mask = sub > 0
+                    if bool(xp.any(valid_mask).item() if hasattr(xp.any(valid_mask), "item") else xp.any(valid_mask)):
+                        valid = sub[valid_mask]
+                        d_min = float(xp.percentile(valid, 5).item())
+                        d_max = float(xp.percentile(valid, 95).item())
+                    else:
+                        d_min, d_max = 0.0, 10000.0
                 else:
-                    d_min, d_max = 0.0, 10000.0
+                    valid = d_mm_gpu[d_mm_gpu > 0]
+                    if valid.size > 10:
+                        d_min = float(np.percentile(valid, 5))
+                        d_max = float(np.percentile(valid, 95))
+                    else:
+                        d_min, d_max = 0.0, 10000.0
+
+                if d_max - d_min < 200:          # minimum 200 mm range
+                    mid   = (d_min + d_max) / 2
+                    d_min = max(0.0, mid - 100)
+                    d_max = mid + 100
 
                 # Normalise on GPU -> uint8 -> D2H for OpenCV colourmap
                 vis_gpu  = xp.clip(d_mm_gpu, d_min, d_max) if USE_CUPY \
@@ -2235,6 +2285,9 @@ class RobustStereoSLAM:
         avg_d_fps = (sum(self.depth_fps_buffer)/len(self.depth_fps_buffer)
                      if self.depth_fps_buffer else 0.0)
 
+        # V58: Return early to avoid HUD overhead and VRAM allocations
+        return
+
         # State colour
         state_color = {
             TrackingState.TRACKING:     (0,255,0),
@@ -2248,7 +2301,7 @@ class RobustStereoSLAM:
             f"State:{self.state.name}",
             f"SLAM FPS:{avg_fps:.1f} | Depth FPS:{avg_d_fps:.1f}",
             f"Track:{'OK' if tracked else 'LOST'} | Inliers:{num_inliers}",
-            f"Features:{len(kpts)} | Bubbles:{len(self.bubble_map.mu)}",
+            f"Features:{len(kpts)} | Bubbles:{len(self.bubble_map)}",
             f"Depth res:{self.proc_size[0]}x{self.proc_size[1]} (StereoDepth) | "
             f"cov:{coverage_pct:.1f}%",
             f"Pos:({self.curr_pose[0,3]:.2f},{self.curr_pose[1,3]:.2f},{self.curr_pose[2,3]:.2f})",
@@ -2333,17 +2386,14 @@ class RobustStereoSLAM:
             bubble_file = os.path.join(output_folder, "bubble_map.npz")
             if os.path.exists(bubble_file) and self.bubble_map is not None:
                 bubble_data = np.load(bubble_file, allow_pickle=True)
-                if USE_CUPY:
-                    self.bubble_map.mu = xp.asarray(bubble_data['mu'])
-                    self.bubble_map.Sigma = xp.asarray(bubble_data['Sigma'])
-                    self.bubble_map.weight = xp.asarray(bubble_data['weight'])
-                    self.bubble_map.color = xp.asarray(bubble_data['color'])
-                else:
-                    self.bubble_map.mu = bubble_data['mu']
-                    self.bubble_map.Sigma = bubble_data['Sigma']
-                    self.bubble_map.weight = bubble_data['weight']
-                    self.bubble_map.color = bubble_data['color']
-                print(f" [LOAD] Restored bubble map with {len(self.bubble_map.mu)} points")
+                # Use load_bubbles method instead of direct property assignment
+                self.bubble_map.load_bubbles(
+                    mu=bubble_data['mu'],
+                    Sigma=bubble_data['Sigma'],
+                    weight=bubble_data['weight'],
+                    color=bubble_data['color']
+                )
+                print(f" [LOAD] Restored bubble map with {len(self.bubble_map)} points")
                 loaded_any = True
         except Exception as e:
             print(f" [WARN] Failed to load bubble map: {e}")
@@ -2447,63 +2497,61 @@ class RobustStereoSLAM:
         Periodically save reconstruction state for persistence.
         Runs in background to avoid blocking the tracking thread.
         """
-        # DISABLED: Output folder creation removed per user request
-        # output_folder = self.config.get("output_folder", "scan_output")
-        # checkpoint_dir = os.path.join(output_folder, name)
-        # os.makedirs(checkpoint_dir, exist_ok=True)
+        # DISABLED: Output folder creation and file saving removed per user request
+        return
         
-        try:
-            # 1. Save metadata
-            state = {
-                'frame_id': self.frame_id,
-                'num_keyframes': len(self.voxel_manager.keyframes),
-                'num_bubbles': len(self.bubble_map.mu) if self.bubble_map else 0,
-                'timestamp': time.time()
-            }
-            # import yaml  # DISABLED - File saving removed per user request
-            # with open(os.path.join(checkpoint_dir, "metadata.yaml"), 'w') as f:
-            #     yaml.dump(state, f)
-                
-            # 2. Save bubble map (GPU resident)
-            if self.bubble_map is not None and len(self.bubble_map.mu) > 0:
-                bubble_data = {
-                    'mu': to_numpy_safe(self.bubble_map.mu),
-                    'Sigma': to_numpy_safe(self.bubble_map.Sigma),
-                    'weight': to_numpy_safe(self.bubble_map.weight),
-                    'color': to_numpy_safe(self.bubble_map.color),
-                }
-                np.savez_compressed(os.path.join(checkpoint_dir, "bubble_map.npz"), **bubble_data)
-                
-            # 3. Save voxel grid
-            if self.voxel_manager.voxel_grid is not None:
-                vg = self.voxel_manager.voxel_grid
-                grid_data = {
-                    'sdf': to_numpy_safe(vg.sdf_grid),
-                    'weight': to_numpy_safe(vg.weight_grid),
-                    'color': to_numpy_safe(vg.color_grid),
-                    'origin': to_numpy_safe(vg.origin),
-                    'voxel_length': float(vg.voxel_length)
-                }
-                np.savez_compressed(os.path.join(checkpoint_dir, "voxel_grid.npz"), **grid_data)
-                
-            # 4. Save keyframe metadata
-            kf_data = []
-            for kf in self.voxel_manager.keyframes:
-                kf_data.append({
-                    'id': kf.id,
-                    'pose': kf.pose,
-                    'scores_mean': float(np.mean(kf.scores)) if kf.scores is not None and len(kf.scores) > 0 else 0
-                })
-            np.save(os.path.join(checkpoint_dir, "keyframes_meta.npy"), np.array(kf_data, dtype=object))
-            
-            # Atomic update of 'latest' symlink/copy if needed
-            if name != "latest":
-                latest_dir = os.path.join(output_folder, "latest")
-                # In Windows, we just copy or rename. For now, we'll just let them coexist.
-                
-            logger.info(f" [SAVE] Map checkpoint '{name}' saved successfully")
-        except Exception as e:
-            logger.error(f" [SAVE] Checkpoint failed: {e}")
+        # try:
+        #     # 1. Save metadata
+        #     state = {
+        #         'frame_id': self.frame_id,
+        #         'num_keyframes': len(self.voxel_manager.keyframes),
+        #         'num_bubbles': len(self.bubble_map) if self.bubble_map else 0,
+        #         'timestamp': time.time()
+        #     }
+        #     # import yaml  # DISABLED - File saving removed per user request
+        #     # with open(os.path.join(checkpoint_dir, "metadata.yaml"), 'w') as f:
+        #     #     yaml.dump(state, f)
+        #         
+        #     # 2. Save bubble map (GPU resident)
+        #     if self.bubble_map is not None and len(self.bubble_map) > 0:
+        #         bubble_data = {
+        #             'mu': to_numpy_safe(self.bubble_map.mu),
+        #             'Sigma': to_numpy_safe(self.bubble_map.Sigma),
+        #             'weight': to_numpy_safe(self.bubble_map.weight),
+        #             'color': to_numpy_safe(self.bubble_map.color),
+        #         }
+        #         np.savez_compressed(os.path.join(checkpoint_dir, "bubble_map.npz"), **bubble_data)
+        #         
+        #     # 3. Save voxel grid
+        #     if self.voxel_manager.voxel_grid is not None:
+        #         vg = self.voxel_manager.voxel_grid
+        #         grid_data = {
+        #             'sdf': to_numpy_safe(vg.sdf_grid),
+        #             'weight': to_numpy_safe(vg.weight_grid),
+        #             'color': to_numpy_safe(vg.color_grid),
+        #             'origin': to_numpy_safe(vg.origin),
+        #             'voxel_length': float(vg.voxel_length)
+        #         }
+        #         np.savez_compressed(os.path.join(checkpoint_dir, "voxel_grid.npz"), **grid_data)
+        #         
+        #     # 4. Save keyframe metadata
+        #     kf_data = []
+        #     for kf in self.voxel_manager.keyframes:
+        #         kf_data.append({
+        #             'id': kf.id,
+        #             'pose': kf.pose,
+        #             'scores_mean': float(np.mean(kf.scores)) if kf.scores is not None and len(kf.scores) > 0 else 0
+        #         })
+        #     np.save(os.path.join(checkpoint_dir, "keyframes_meta.npy"), np.array(kf_data, dtype=object))
+        #     
+        #     # Atomic update of 'latest' symlink/copy if needed
+        #     if name != "latest":
+        #         latest_dir = os.path.join(output_folder, "latest")
+        #         # In Windows, we just copy or rename. For now, we'll just let them coexist.
+        #         
+        #     logger.info(f" [SAVE] Map checkpoint '{name}' saved successfully")
+        # except Exception as e:
+        #     logger.error(f" [SAVE] Checkpoint failed: {e}")
 
     def save_reconstruction_state(self):
         """Save the current reconstruction state to file (metadata only)."""
@@ -2515,7 +2563,7 @@ class RobustStereoSLAM:
                 'timestamp': datetime.now().isoformat(),
                 'frame_id': self.frame_id,
                 'num_keyframes': len(self.voxel_manager.keyframes),
-                'bubble_map_size': len(self.bubble_map.mu) if self.bubble_map else 0,
+                'bubble_map_size': len(self.bubble_map) if self.bubble_map else 0,
                 'config': {k: v for k, v in self.config.items() if isinstance(v, (int, float, str, bool))}
             }
             
@@ -2570,8 +2618,6 @@ class RobustStereoSLAM:
         if self.imu is not None:
             self.imu.stop()
 
-        self.voxel_manager.shutdown()
-        self.bubble_map.shutdown()
         if self.visualizer:
             self.visualizer.close()
         cv2.destroyAllWindows()
@@ -2582,7 +2628,7 @@ class RobustStereoSLAM:
         print("="*60)
         print(f"Total Frames Processed  : {self.frame_id}")
         print(f"Total Keyframes         : {len(self.voxel_manager.keyframes)}")
-        print(f"Final Bubble Map Size   : {len(self.bubble_map.mu) if self.bubble_map is not None else 0} points")
+        print(f"Final Bubble Map Size   : {len(self.bubble_map) if self.bubble_map is not None else 0} points")
         if self.frame_id > 0:
             srate = (self.frame_id-self.consecutive_failures)/self.frame_id*100
             print(f"Tracking Success Rate   : {srate:.1f}%")
@@ -2600,7 +2646,11 @@ class RobustStereoSLAM:
               f"freq={self._ba_frequency} KFs)")
         print("="*60)
 
-        # 8. Final GPU cleanup
+        # 8. Cleanup mapping resources AFTER stats
+        self.voxel_manager.shutdown()
+        self.bubble_map.shutdown()
+
+        # 9. Final GPU cleanup
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         if USE_CUPY:
